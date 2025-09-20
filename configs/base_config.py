@@ -5,8 +5,8 @@ class BaseConfig:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Data
-    csv_path = "path/to/your/video_data.csv"  # Update this
-    chunk_base_path = "path/to/your/chunk/directory"  # Update this
+    csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"  # Update this
+    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset/chunks"  # Update this
     train_ratio = 0.8
     val_ratio = 0.1
     test_ratio = 0.1
