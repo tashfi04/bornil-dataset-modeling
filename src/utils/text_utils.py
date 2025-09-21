@@ -5,9 +5,24 @@ from collections import Counter
 def build_vocab_from_csv(csv_path, output_path):
     """Builds character vocabulary from text in CSV and saves it."""
     df = pd.read_csv(csv_path)
-    all_text = ' '.join(df['text'].astype(str).tolist())
+    
+    # NORMALIZE: Convert all text to lowercase first (for Latin alphabets)
+    all_text = ' '.join(df['text'].astype(str).str.lower().tolist())
+    
+    # Keep Bangla characters, English letters, numbers, and basic punctuation
+    # This pattern preserves both Bangla and English characters
+    # allowed_pattern = re.compile(
+    #     r'[\u0980-\u09FF]|'  # Bangla characters
+    #     r'[a-z]|'            # English letters (now lowercase only)
+    #     r'[0-9]|'            # Numbers
+    #     r'[\.\,\?\!\"\'\-\:\;\(\)]|'  # Basic punctuation
+    #     r'\s'                 # Whitespace
+    # )
+    
+    # filtered_text = ''.join(allowed_pattern.findall(all_text))
     
     # Count characters and create vocabulary
+    # counter = Counter(filtered_text)
     counter = Counter(all_text)
     vocab = sorted(counter.keys())
     
@@ -25,6 +40,7 @@ def build_vocab_from_csv(csv_path, output_path):
                  f, ensure_ascii=False, indent=2)
     
     print(f"Vocabulary created with {len(char_to_id)} tokens")
+    print("Characters:", ''.join(vocab))
     return char_to_id, id_to_char
 
 def text_to_int(sentence, char_to_id):
