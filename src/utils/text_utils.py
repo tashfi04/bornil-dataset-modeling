@@ -11,9 +11,25 @@ def build_vocab_from_csv(csv_path, output_path):
 
     # NORMALIZE: Replace non-breaking spaces with regular spaces
     all_text = all_text.replace('\u00A0', ' ')  # Replace non-breaking space
+
+    # COMPREHENSIVE NORMALIZATION: Replace various space-like characters with regular spaces
+    space_normalizations = {
+        '\u00A0': ' ',  # Non-breaking space
+        '\u200B': ' ',  # Zero width space
+        '\u200C': ' ',  # Zero width non-joiner
+        '\u200D': ' ',  # Zero width joiner
+        '\u200E': ' ',  # Left-to-right mark
+        '\u200F': ' ',  # Right-to-left mark
+        '\u202A': ' ',  # Left-to-right embedding
+        '\u202C': ' ',  # Pop directional formatting
+        '\uFEFF': ' ',  # Zero width no-break space (BOM)
+    }
+
+    for old_char, new_char in space_normalizations.items():
+        all_text = all_text.replace(old_char, new_char)
     
-    # Keep Bangla characters, English letters, numbers, and basic punctuation
-    # This pattern preserves both Bangla and English characters
+    # Remove other unwanted invisible characters but keep meaningful ones
+    # Keep only: Bangla chars, English letters, numbers, punctuation, and regular whitespace
     # allowed_pattern = re.compile(
     #     r'[\u0980-\u09FF]|'  # Bangla characters
     #     r'[a-z]|'            # English letters (now lowercase only)
