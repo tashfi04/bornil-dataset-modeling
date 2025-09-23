@@ -8,6 +8,9 @@ def build_vocab_from_csv(csv_path, output_path):
     
     # NORMALIZE: Convert all text to lowercase first (for Latin alphabets)
     all_text = ' '.join(df['text'].astype(str).str.lower().tolist())
+
+    # NORMALIZE: Replace non-breaking spaces with regular spaces
+    all_text = all_text.replace('\u00A0', ' ')  # Replace non-breaking space
     
     # Keep Bangla characters, English letters, numbers, and basic punctuation
     # This pattern preserves both Bangla and English characters
