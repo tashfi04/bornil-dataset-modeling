@@ -28,6 +28,8 @@ def build_vocab_from_csv(csv_path, output_path):
         '\u2013': '-',      # En dash
         '\u2014': '-',      # Em dash
         # '\u2026': '...',    # Horizontal ellipsis
+
+        '\u09F7': '\u0964',  # Normalize BENGALI CURRENCY NUMERATOR ONE to standard DANDA
     }
 
     for old_char, new_char in normalization_map.items():
