@@ -3,6 +3,10 @@ import torch.nn as nn
 from torch.optim import Adam
 from tqdm import tqdm
 import sys
+import os
+
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(repo_root)
 
 from configs.base_config import config
 from src.data_loader import get_data_loaders
