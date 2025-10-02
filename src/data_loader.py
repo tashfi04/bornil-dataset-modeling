@@ -132,21 +132,26 @@ def get_data_loaders(config):
     except Exception as e:
         logger.error(f"Error loading CSV: {e}")
         raise
+
+    # Load fixed splits
+    split_file = config.train_val_test_split_path
+    if not os.path.exists(split_file):
+        raise FileNotFoundError(
+            f"Split file not found: {split_file}. "
+            f"Please run scripts/generate_splits.py first."
+        )
+
+    with open(split_file, 'r', encoding='utf-8') as f:
+        split_mapping = json.load(f)
+
+    # Split the data based on saved mapping
+    train_df = df[df['recording'].isin([k for k, v in split_mapping.items() if v == 'train'])]
+    val_df = df[df['recording'].isin([k for k, v in split_mapping.items() if v == 'val'])]
+    test_df = df[df['recording'].isin([k for k, v in split_mapping.items() if v == 'test'])]
     
-    # Use config parameters for splitting
-    train_df, test_df = train_test_split(
-        df, test_size=config.test_ratio, 
-        random_state=config.random_seed,
-        stratify=df['text'] if len(df['text'].unique()) > 1 else None
-    )
-    train_df, val_df = train_test_split(
-        train_df, test_size=config.val_ratio/(1-config.test_ratio), 
-        random_state=config.random_seed
-    )
+    logger.info(f"Using fixed splits - Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
     
-    logger.info(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-    
-    # Create datasets with config
+    # Create datasets
     train_dataset = BdSLDataset(train_df, config, 'train')
     val_dataset = BdSLDataset(val_df, config, 'val')
     test_dataset = BdSLDataset(test_df, config, 'test')

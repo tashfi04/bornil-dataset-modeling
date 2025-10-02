@@ -1,10 +1,10 @@
 import json
 import torch
 import torch.nn as nn
-import editdistance
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
+from src.utils.metrics import calculate_all_metrics
 
 from src.training.base_trainer import BaseTrainer
 
@@ -130,14 +130,19 @@ class CTCTrainer(BaseTrainer):
             
             train_loss = self.train_epoch(epoch)
             val_loss = self.validate(epoch)
-
-            wer, cer = self.calculate_wer_cer(epoch)
-            if wer is not None:
-                self.logger.info(f"WER: {wer:.4f}, CER: {cer:.4f}")
             
             self.scheduler.step(val_loss)
             current_lr = self.optimizer.param_groups[0]['lr']
             self.logger.info(f"Learning Rate: {current_lr:.2e}")
+
+            # Calculate metrics (less frequently to save time)
+            metrics = self.calculate_wer_cer(epoch)
+            if metrics is not None:
+                self.logger.info(
+                    f"Metrics - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
+                    f"Exact Match: {metrics['exact_match_accuracy']:.4f}, "
+                    f"Token Accuracy: {metrics['token_accuracy']:.4f}"
+                )
             
             # SMART UNFREEZING: Unfreeze CNN after validation loss plateaus
             if (not cnn_unfrozen and 
@@ -175,9 +180,9 @@ class CTCTrainer(BaseTrainer):
                 break
 
     def calculate_wer_cer(self, epoch):
-        """Calculate Word Error Rate and Character Error Rate"""
+        """Calculate comprehensive evaluation metrics"""
         if epoch % 5 != 0:  # Calculate every 5 epochs to save time
-            return None, None
+            return None
         
         self.model.eval()
         all_predictions = []
@@ -212,34 +217,7 @@ class CTCTrainer(BaseTrainer):
                     all_predictions.append(predicted_text)
                     all_targets.append(text_labels[i])
         
-        # Calculate WER and CER
-        wer = self.compute_wer(all_targets, all_predictions)
-        cer = self.compute_cer(all_targets, all_predictions)
+        # Use utils metrics function
+        metrics = calculate_all_metrics(all_targets, all_predictions)
         
-        return wer, cer
-
-    def compute_wer(self, references, hypotheses):
-        """Compute Word Error Rate"""
-        total_errors = 0
-        total_words = 0
-        
-        for ref, hyp in zip(references, hypotheses):
-            ref_words = ref.split()
-            hyp_words = hyp.split()
-            errors = editdistance.eval(ref_words, hyp_words)
-            total_errors += errors
-            total_words += len(ref_words)
-        
-        return total_errors / total_words if total_words > 0 else 0
-
-    def compute_cer(self, references, hypotheses):
-        """Compute Character Error Rate"""
-        total_errors = 0
-        total_chars = 0
-        
-        for ref, hyp in zip(references, hypotheses):
-            errors = editdistance.eval(ref, hyp)
-            total_errors += errors
-            total_chars += len(ref)
-        
-        return total_errors / total_chars if total_chars > 0 else 0
+        return metrics

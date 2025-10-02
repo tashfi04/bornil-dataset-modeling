@@ -11,6 +11,7 @@ class BaseConfig:
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     vocab_path = os.path.join(repo_root, "data", "vocab.json")
+    train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")
     
     # Create output directory
