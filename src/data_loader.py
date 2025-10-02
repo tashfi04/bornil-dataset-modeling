@@ -37,32 +37,49 @@ class BdSLDataset(Dataset):
         return len(self.df)
     
     def __getitem__(self, idx):
-        try:
-            row = self.df.iloc[idx]
-            text_label = row['text']
-            video_filename = row['recording']
-            chunk_folder = row['chunk_path']
-            
-            # Build full video path using config
-            full_video_path = os.path.join(self.config.chunk_base_path, 
-                                          chunk_folder, video_filename)
-            
-            # Load and preprocess video using config parameters
-            video = self.load_video_frames(full_video_path)
-            
-            # Convert text to integer sequence
-            text_seq = text_to_int(text_label, self.char_to_id)
-            
-            return {
-                'video': torch.FloatTensor(video),
-                'text': text_label,
-                'text_seq': torch.LongTensor(text_seq),
-                'video_path': full_video_path
-            }
-        except Exception as e:
-            logger.error(f"Error loading sample {idx}: {e}")
-            # Return a dummy sample to avoid breaking the batch
-            return self.__getitem__((idx + 1) % len(self.df))
+        original_idx = idx
+        max_attempts = 3
+        
+        for attempt in range(max_attempts):
+            try:
+                row = self.df.iloc[idx]
+                text_label = row['text']
+                video_filename = row['recording']
+                chunk_folder = row['chunk_path']
+                
+                # Build full video path using config
+                full_video_path = os.path.join(self.config.chunk_base_path, 
+                                            chunk_folder, video_filename)
+                
+                # Load and preprocess video using config parameters
+                video = self.load_video_frames(full_video_path)
+                
+                # Convert text to integer sequence
+                text_seq = text_to_int(text_label, self.char_to_id)
+                
+                return {
+                    'video': torch.FloatTensor(video),
+                    'text': text_label,
+                    'text_seq': torch.LongTensor(text_seq),
+                    'video_path': full_video_path
+                }
+            except Exception as e:
+                logger.warning(f"Error loading sample {idx} (attempt {attempt + 1}/{max_attempts}): {e}")
+                if attempt == max_attempts - 1:  # Last attempt failed
+                    logger.error(f"Failed to load sample {original_idx} after {max_attempts} attempts")
+                    # Return a dummy sample that won't break training
+                    dummy_video = torch.zeros((3, self.config.num_frames, 
+                                            self.config.frame_size[0], self.config.frame_size[1]))
+                    dummy_text = ""
+                    dummy_seq = torch.LongTensor([0])  # Blank token
+                    return {
+                        'video': dummy_video,
+                        'text': dummy_text,
+                        'text_seq': dummy_seq,
+                        'video_path': 'failed_to_load'
+                    }
+                # Try next sample
+                idx = (idx + 1) % len(self.df)
     
     def load_video_frames(self, video_path):
         """Load and preprocess video frames using config parameters"""
@@ -86,18 +103,19 @@ class BdSLDataset(Dataset):
         
         if len(frames) == 0:
             raise ValueError(f"No frames loaded from {video_path}")
-        
-        # Sample fixed number of frames using config parameter
-        if len(frames) > self.config.num_frames:
-            indices = np.linspace(0, len(frames)-1, self.config.num_frames, dtype=int)
+
+        # Only do minimal sampling if video is too long (to prevent memory issues)
+        max_frames = getattr(self.config, 'max_frames', 300)  # Set a reasonable maximum
+        if len(frames) > max_frames:
+            # Sample evenly but keep more temporal information
+            indices = np.linspace(0, len(frames)-1, max_frames, dtype=int)
             frames = [frames[i] for i in indices]
-        elif len(frames) < self.config.num_frames:
-            # Pad with last frame
-            frames.extend([frames[-1]] * (self.config.num_frames - len(frames)))
+            logger.info(f"Video too long ({len(frames)} frames), sampled to {max_frames}")
         
-        # Normalize and reshape to (C, T, H, W)
+        # Padding for shorter videos is handled in collate_fn
+        # Normalize and reshape
         frames = np.array(frames) / 255.0
-        frames = np.transpose(frames, (3, 0, 1, 2))  # (T, H, W, C) -> (C, T, H, W)
+        frames = np.transpose(frames, (3, 0, 1, 2))  # (C, T, H, W)
         
         return frames
 
@@ -162,27 +180,38 @@ def get_data_loaders(config):
     return train_loader, val_loader, test_loader
 
 def collate_fn(batch):
-    """Custom collate function to handle variable length text sequences"""
+    """Custom collate function to handle variable length videos and text sequences"""
     # Filter out None values from failed samples
     batch = [b for b in batch if b is not None]
+
+    # Sort batch by video length (descending) for packed sequences
+    batch.sort(key=lambda x: x['video'].size(1), reverse=True)
     
-    videos = torch.stack([item['video'] for item in batch])
+    videos = [item['video'] for item in batch]
     text_seqs = [item['text_seq'] for item in batch]
     text_labels = [item['text'] for item in batch]
     video_paths = [item['video_path'] for item in batch]
+
+    # Get actual video lengths (number of frames)
+    video_lengths = torch.LongTensor([video.size(1) for video in videos])
+
+    # Pad videos to maximum length in this batch
+    padded_videos = torch.nn.utils.rnn.pad_sequence(
+        [video.permute(1, 0, 2, 3) for video in videos],  # (T, C, H, W) for padding
+        batch_first=True
+    ).permute(0, 2, 1, 3, 4)  # Back to (B, C, T, H, W)
     
     # Get lengths for CTC loss
-    video_lengths = torch.LongTensor([videos.size(1)] * len(batch))  # Use actual sequence length
     text_lengths = torch.LongTensor([len(seq) for seq in text_seqs])
     
     # Pad text sequences
     padded_text_seqs = torch.nn.utils.rnn.pad_sequence(text_seqs, batch_first=True)
     
     return {
-        'videos': videos,
+        'videos': padded_videos,
         'text_seqs': padded_text_seqs,
         'text_labels': text_labels,
         'video_paths': video_paths,
-        'video_lengths': video_lengths,
+        'video_lengths': video_lengths, # Actual lengths before padding
         'text_lengths': text_lengths
     }

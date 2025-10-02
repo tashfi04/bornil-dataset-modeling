@@ -52,15 +52,15 @@ class CTCTrainer(BaseTrainer):
             video_lengths = batch['video_lengths'].to(self.config.device)
             text_lengths = batch['text_lengths'].to(self.config.device)
             
-            # Forward pass
+            # Forward pass with video lengths
             self.optimizer.zero_grad()
-            outputs = self.model(videos)
+            outputs = self.model(videos, video_lengths)
             
             # CTC loss calculation
             loss = self.criterion(
-                outputs.permute(1, 0, 2),  # (T, N, C)
+                outputs.permute(1, 0, 2),  # (T, B, C)
                 text_seqs,
-                video_lengths,
+                video_lengths,  # Use actual video lengths
                 text_lengths
             )
             

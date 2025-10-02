@@ -23,8 +23,9 @@ class BaseConfig:
     random_seed = 42
     
     # Video processing (default values, overridden by model-specific configs)
-    num_frames = 16 # 32
-    frame_size = (112, 112)  # (height, width)
+    num_frames = 16         # 32
+    max_frames = 300        # Maximum frames to prevent memory issues
+    frame_size = (112, 112) # (height, width)
     
     # Training (default values, overridden by model-specific configs)
     batch_size = 4

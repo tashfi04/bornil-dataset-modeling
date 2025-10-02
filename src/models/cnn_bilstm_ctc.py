@@ -44,34 +44,50 @@ class CNNBiLSTMCTC(nn.Module):
         # Classifier
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(lstm_hidden_size * 2, num_classes)
-        
+
         # Initialize classifier weights
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.constant_(self.classifier.bias, 0)
         
-    def forward(self, x):
-        # x shape: (B, C, T, H, W)
+    def forward(self, x, video_lengths=None):
+        """
+        Args:
+            x: padded video tensor of shape (B, C, T, H, W)
+            video_lengths: actual lengths of each video in the batch
+        """
         batch_size, channels, timesteps, height, width = x.size()
-        
-        # Process each frame through CNN
-        cnn_features = []
-        for t in range(timesteps):
-            frame = x[:, :, t, :, :]  # (B, C, H, W)
-            features = self.cnn(frame)  # (B, 512, H', W')
-            features = self.adaptive_pool(features)  # (B, 512, 1, 1)
-            features = features.view(batch_size, -1)  # (B, 512)
-            cnn_features.append(features)
-        
-        # Stack features -> (B, T, 512)
-        cnn_features = torch.stack(cnn_features, dim=1)
-        
-        # LSTM with packed sequence for efficiency
-        lstm_out, _ = self.lstm(cnn_features)  # (B, T, hidden_size * 2)
-        
+
+        # OPTIMIZATION: Process all frames in one batch
+        # Reshape to (B*T, C, H, W) - combine batch and time dimensions
+        x_flat = x.permute(0, 2, 1, 3, 4).contiguous()  # (B, T, C, H, W)
+        x_flat = x_flat.view(-1, channels, height, width)  # (B*T, C, H, W)
+
+        # Process all frames through CNN at once
+        features = self.cnn(x_flat)  # (B*T, 512, H', W')
+        features = self.adaptive_pool(features)  # (B*T, 512, 1, 1)
+        features = features.view(batch_size * timesteps, -1)  # (B*T, 512)
+
+        # Reshape back to (B, T, 512)
+        cnn_features = features.view(batch_size, timesteps, -1)
+
+        # Use packed sequences for variable length
+        if video_lengths is not None:
+            # Pack the sequence to ignore padding
+            packed_input = nn.utils.rnn.pack_padded_sequence(
+                cnn_features, video_lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+            packed_output, _ = self.lstm(packed_input)
+            lstm_out, _ = nn.utils.rnn.pad_packed_sequence(
+                packed_output, batch_first=True, total_length=timesteps
+            )
+        else:
+            # Fallback to standard LSTM if no lengths provided
+            lstm_out, _ = self.lstm(cnn_features) # (B, T, hidden_size * 2)
+
         # Apply dropout and classifier
         lstm_out = self.dropout(lstm_out)
         output = self.classifier(lstm_out)  # (B, T, num_classes)
-        
+
         # Log softmax for CTC loss
         output = F.log_softmax(output, dim=2)
         
