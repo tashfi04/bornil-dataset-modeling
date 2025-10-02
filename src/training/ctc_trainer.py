@@ -1,6 +1,7 @@
 import json
 import torch
 import torch.nn as nn
+import editdistance
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
@@ -122,14 +123,40 @@ class CTCTrainer(BaseTrainer):
         """Main training loop"""
         best_val_loss = float('inf')
         patience_counter = 0
+        cnn_unfrozen = False
         
         for epoch in range(1, self.config.num_epochs + 1):
             self.logger.info(f"Epoch {epoch}/{self.config.num_epochs}")
             
             train_loss = self.train_epoch(epoch)
             val_loss = self.validate(epoch)
+
+            wer, cer = self.calculate_wer_cer(epoch)
+            if wer is not None:
+                self.logger.info(f"WER: {wer:.4f}, CER: {cer:.4f}")
             
             self.scheduler.step(val_loss)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.logger.info(f"Learning Rate: {current_lr:.2e}")
+            
+            # SMART UNFREEZING: Unfreeze CNN after validation loss plateaus
+            if (not cnn_unfrozen and 
+                patience_counter >= 3 and  # After 3 epochs without improvement
+                self.config.freeze_cnn_initially):
+                
+                self.logger.info("Unfreezing CNN backbone for fine-tuning")
+                self.model.unfreeze_cnn()
+                
+                # Reset optimizer with lower learning rate for fine-tuning
+                self.optimizer = Adam(
+                    [{'params': self.model.cnn.parameters(), 'lr': self.config.learning_rate / 10},
+                    {'params': self.model.lstm.parameters()},
+                    {'params': self.model.classifier.parameters()}],
+                    lr=self.config.learning_rate
+                )
+                self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
+                cnn_unfrozen = True
+                patience_counter = 0  # Reset patience after unfreezing
             
             # Save checkpoint
             is_best = val_loss < best_val_loss
@@ -146,3 +173,73 @@ class CTCTrainer(BaseTrainer):
             if patience_counter >= self.config.early_stopping_patience:
                 self.logger.info("Early stopping triggered!")
                 break
+
+    def calculate_wer_cer(self, epoch):
+        """Calculate Word Error Rate and Character Error Rate"""
+        if epoch % 5 != 0:  # Calculate every 5 epochs to save time
+            return None, None
+        
+        self.model.eval()
+        all_predictions = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for batch in self.val_loader:
+                videos = batch['videos'].to(self.config.device)
+                video_lengths = batch['video_lengths'].to(self.config.device)
+                text_seqs = batch['text_seqs']
+                text_labels = batch['text_labels']
+                
+                outputs = self.model(videos, video_lengths)
+                outputs = outputs.permute(1, 0, 2)  # (T, B, C) for CTC
+                
+                # Greedy decoding
+                _, max_indices = torch.max(outputs, dim=2)
+                max_indices = max_indices.transpose(0, 1).cpu().numpy()  # (B, T)
+                
+                for i in range(len(max_indices)):
+                    # Remove blanks and collapse repeats
+                    sequence = max_indices[i]
+                    decoded = []
+                    previous = None
+                    for idx in sequence:
+                        if idx != 0 and idx != previous:  # 0 is blank token
+                            decoded.append(idx)
+                        previous = idx
+                    
+                    # Convert to text
+                    predicted_text = ''.join([self.vocab['id_to_char'][str(idx)] for idx in decoded])
+                    all_predictions.append(predicted_text)
+                    all_targets.append(text_labels[i])
+        
+        # Calculate WER and CER
+        wer = self.compute_wer(all_targets, all_predictions)
+        cer = self.compute_cer(all_targets, all_predictions)
+        
+        return wer, cer
+
+    def compute_wer(self, references, hypotheses):
+        """Compute Word Error Rate"""
+        total_errors = 0
+        total_words = 0
+        
+        for ref, hyp in zip(references, hypotheses):
+            ref_words = ref.split()
+            hyp_words = hyp.split()
+            errors = editdistance.eval(ref_words, hyp_words)
+            total_errors += errors
+            total_words += len(ref_words)
+        
+        return total_errors / total_words if total_words > 0 else 0
+
+    def compute_cer(self, references, hypotheses):
+        """Compute Character Error Rate"""
+        total_errors = 0
+        total_chars = 0
+        
+        for ref, hyp in zip(references, hypotheses):
+            errors = editdistance.eval(ref, hyp)
+            total_errors += errors
+            total_chars += len(ref)
+        
+        return total_errors / total_chars if total_chars > 0 else 0
