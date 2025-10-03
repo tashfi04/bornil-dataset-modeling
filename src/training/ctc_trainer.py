@@ -49,7 +49,7 @@ class CTCTrainer(BaseTrainer):
         for batch_idx, batch in enumerate(pbar):
             # Move data to device
             videos = batch['videos'].to(self.config.device)
-            text_seqs = batch['text_seqs'].to(self.config.device)
+            text_targets = batch['text_targets'].to(self.config.device)  # 1D targets
             video_lengths = batch['video_lengths'].to(self.config.device)
             text_lengths = batch['text_lengths'].to(self.config.device)
             
@@ -59,9 +59,9 @@ class CTCTrainer(BaseTrainer):
             
             # CTC loss calculation
             loss = self.criterion(
-                outputs.permute(1, 0, 2),  # (T, B, C)
-                text_seqs,
-                video_lengths,  # Use actual video lengths
+                outputs.permute(1, 0, 2),   # (T, B, C)
+                text_targets,               # 1D concatenated targets
+                video_lengths,              # Use actual video lengths
                 text_lengths
             )
             
@@ -86,14 +86,14 @@ class CTCTrainer(BaseTrainer):
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
             for batch in pbar:
                 videos = batch['videos'].to(self.config.device)
-                text_seqs = batch['text_seqs'].to(self.config.device)
+                text_targets = batch['text_targets'].to(self.config.device)  # 1D targets
                 video_lengths = batch['video_lengths'].to(self.config.device)
                 text_lengths = batch['text_lengths'].to(self.config.device)
                 
-                outputs = self.model(videos)
+                outputs = self.model(videos, video_lengths)
                 loss = self.criterion(
                     outputs.permute(1, 0, 2),
-                    text_seqs,
+                    text_targets,   # 1D concatenated targets
                     video_lengths,
                     text_lengths
                 )
@@ -201,10 +201,16 @@ class CTCTrainer(BaseTrainer):
                 # Greedy decoding
                 _, max_indices = torch.max(outputs, dim=2)
                 max_indices = max_indices.transpose(0, 1).cpu().numpy()  # (B, T)
+
+                # Get video lengths for decoding
+                video_lengths_np = batch['video_lengths'].cpu().numpy()
                 
                 for i in range(len(max_indices)):
+                    # Only decode up to actual video length (ignore padding)
+                    seq_len = video_lengths_np[i]
+                    sequence = max_indices[i][:seq_len]  # Only take real frames
+
                     # Remove blanks and collapse repeats
-                    sequence = max_indices[i]
                     decoded = []
                     previous = None
                     for idx in sequence:

@@ -193,7 +193,7 @@ def collate_fn(batch):
     batch.sort(key=lambda x: x['video'].size(1), reverse=True)
     
     videos = [item['video'] for item in batch]
-    text_seqs = [item['text_seq'] for item in batch]
+    text_seqs = [item['text_seq'] for item in batch] # list of 1D LongTensors (variable len)
     text_labels = [item['text'] for item in batch]
     video_paths = [item['video_path'] for item in batch]
 
@@ -208,12 +208,19 @@ def collate_fn(batch):
     
     # Get lengths for CTC loss
     text_lengths = torch.LongTensor([len(seq) for seq in text_seqs])
+
+    # Create 1D concatenated text targets (required by nn.CTCLoss)
+    if len(text_seqs) > 0:
+        text_targets = torch.cat(text_seqs).long()  # 1D LongTensor of all targets
+    else:
+        text_targets = torch.LongTensor([]).long()
     
-    # Pad text sequences
+    # Keep padded text sequences in case needed later
     padded_text_seqs = torch.nn.utils.rnn.pad_sequence(text_seqs, batch_first=True)
     
     return {
         'videos': padded_videos,
+        'text_targets': text_targets,   # 1D targets for CTCLoss (NEW)
         'text_seqs': padded_text_seqs,
         'text_labels': text_labels,
         'video_paths': video_paths,

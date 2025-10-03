@@ -10,10 +10,10 @@ class CNNBiLSTMCTC(nn.Module):
         
         # CNN backbone
         if cnn_backbone == "resnet18":
-            cnn_model = resnet18(pretrained=True)
+            cnn_model = resnet18(weights="IMAGENET1K_V1")  # FIXED: modern API
             self.cnn_feature_size = 512
         elif cnn_backbone == "resnet34":
-            cnn_model = resnet34(pretrained=True)
+            cnn_model = resnet34(weights="IMAGENET1K_V1")  # FIXED: modern API
             self.cnn_feature_size = 512
         else:
             raise ValueError(f"Unsupported CNN backbone: {cnn_backbone}")
@@ -47,7 +47,7 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Initialize classifier weights
         nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.constant_(self.classifier.bias, 0)
+        nn.init.xavier_uniform_(self.classifier.bias.unsqueeze(0)).squeeze()
         
     def forward(self, x, video_lengths=None):
         """
