@@ -1,76 +1,51 @@
 import os
 import json
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import numpy as np
+from sklearn.model_selection import StratifiedShuffleSplit
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from configs.base_config import config
 
 def generate_and_save_splits():
-    """Generate and save train/val/test splits for reproducible experiments"""
+    """Generate and save train/val/test splits for reuse"""
     
     # Load the dataset
     df = pd.read_csv(config.csv_path)
     print(f"Total samples: {len(df)}")
     
-    # Create a unique identifier for each sample (using recording filename)
-    # This ensures we can reliably map back to the same splits
-    sample_ids = df['recording'].tolist()
-    
-    # Stratified split by text length (better than random)
-    # This ensures similar sentence length distributions across splits
+    # Calculate text lengths
     df['text_length'] = df['text'].str.len()
 
     # Since we have unique sentences, we can't stratify by exact text
-    # Instead, we use text length bins, but handle the case where bins might have few samples
+    # Instead, we use text length bins
     
-    # Create more robust bins - use fewer bins for better distribution
-    n_bins = min(5, len(df) // 20)  # Ensure at least ~20 samples per bin
-    df['length_bin'] = pd.cut(df['text_length'], bins=n_bins)
-    
-    # Check bin counts
-    bin_counts = df['length_bin'].value_counts()
-    print("Text length bin distribution:")
-    for bin_val, count in bin_counts.items():
-        print(f"  {bin_val}: {count} samples")
+    # We'll use fewer bins to ensure minimum samples
+    n_bins = min(10, len(df) // 4)  # Ensure at least 4 samples per bin
 
-    # First split: separate test set
-    # Use stratification if possible, otherwise fall back to random
-    try:
-        train_val_df, test_df = train_test_split(
-            df, 
-            test_size=config.test_ratio,
-            random_state=config.random_seed,
-            stratify=df['length_bin']
-        )
-        print("Used stratified split for test set")
-    except ValueError as e:
-        print(f"Stratification failed: {e}. Using random split.")
-        train_val_df, test_df = train_test_split(
-            df, 
-            test_size=config.test_ratio,
-            random_state=config.random_seed
-        )
+    # Use quantile-based binning for balanced bins
+    df['length_bin'] = pd.qcut(df['text_length'], q=n_bins, duplicates='drop')
 
-    # Second split: separate validation set
-    train_val_df['length_bin'] = pd.cut(train_val_df['text_length'], bins=n_bins)
-    
-    try:
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=config.val_ratio/(1-config.test_ratio),
-            random_state=config.random_seed,
-            stratify=train_val_df['length_bin']
-        )
-        print("Used stratified split for validation set")
-    except ValueError as e:
-        print(f"Stratification failed: {e}. Using random split.")
-        train_df, val_df = train_test_split(
-            train_val_df,
-            test_size=config.val_ratio/(1-config.test_ratio),
-            random_state=config.random_seed
-        )
+    # Check bin distribution
+    print(f"Using {len(df['length_bin'].unique())} bins")
+    print("Bin distribution:")
+    print(df['length_bin'].value_counts().sort_index())
+
+    # Initialize splitter
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=config.test_ratio, random_state=config.random_seed)
+
+    # First split: train_val vs test
+    train_val_idx, test_idx = next(sss.split(df, df['length_bin']))
+    train_val_df = df.iloc[train_val_idx]
+    test_df = df.iloc[test_idx]
+
+    # Second split: train vs val
+    sss_val = StratifiedShuffleSplit(n_splits=1, test_size=config.val_ratio/(1-config.test_ratio), 
+                                   random_state=config.random_seed)
+    train_idx, val_idx = next(sss_val.split(train_val_df, train_val_df['length_bin']))
+    train_df = train_val_df.iloc[train_idx]
+    val_df = train_val_df.iloc[val_idx]
     
     # Create split mapping
     split_mapping = {}
