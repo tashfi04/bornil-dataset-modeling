@@ -47,7 +47,6 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Initialize classifier weights
         nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.xavier_uniform_(self.classifier.bias.unsqueeze(0)).squeeze()
         
     def forward(self, x, video_lengths=None):
         """
@@ -91,7 +90,8 @@ class CNNBiLSTMCTC(nn.Module):
         # Log softmax for CTC loss
         output = F.log_softmax(output, dim=2)
         
-        return output # Shape: (B, T, C) - will be permuted in trainer
+        # Return (T, B, C) directly for CTC loss
+        return output.permute(1, 0, 2)
     
     def unfreeze_cnn(self):
         """Unfreeze CNN for fine-tuning"""

@@ -59,7 +59,7 @@ class CTCTrainer(BaseTrainer):
             
             # CTC loss calculation
             loss = self.criterion(
-                outputs.permute(1, 0, 2),   # (T, B, C)
+                outputs,                    # (T, B, C)
                 text_targets,               # 1D concatenated targets
                 video_lengths,              # Use actual video lengths
                 text_lengths
@@ -92,7 +92,7 @@ class CTCTrainer(BaseTrainer):
                 
                 outputs = self.model(videos, video_lengths)
                 loss = self.criterion(
-                    outputs.permute(1, 0, 2),
+                    outputs,
                     text_targets,   # 1D concatenated targets
                     video_lengths,
                     text_lengths
@@ -143,6 +143,8 @@ class CTCTrainer(BaseTrainer):
                     f"Exact Match: {metrics['exact_match_accuracy']:.4f}, "
                     f"Token Accuracy: {metrics['token_accuracy']:.4f}"
                 )
+            else:
+                self.logger.info("Metrics calculation skipped this epoch (runs every 5 epochs)")
             
             # SMART UNFREEZING: Unfreeze CNN after validation loss plateaus
             if (not cnn_unfrozen and 
@@ -192,11 +194,9 @@ class CTCTrainer(BaseTrainer):
             for batch in self.val_loader:
                 videos = batch['videos'].to(self.config.device)
                 video_lengths = batch['video_lengths'].to(self.config.device)
-                text_seqs = batch['text_seqs']
                 text_labels = batch['text_labels']
                 
                 outputs = self.model(videos, video_lengths)
-                outputs = outputs.permute(1, 0, 2)  # (T, B, C) for CTC
                 
                 # Greedy decoding
                 _, max_indices = torch.max(outputs, dim=2)
