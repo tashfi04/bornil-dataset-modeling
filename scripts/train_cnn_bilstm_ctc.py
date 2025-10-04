@@ -1,5 +1,8 @@
 import os
 import sys
+import GPUtil
+
+GPUtil.showUtilization()
 
 # Add repo root to path
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

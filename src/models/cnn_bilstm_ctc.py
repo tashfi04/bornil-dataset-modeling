@@ -92,7 +92,7 @@ class CNNBiLSTMCTC(nn.Module):
         output = self.classifier(lstm_out)  # (B, T, num_classes)
 
         # Log softmax for CTC loss
-        output = F.log_softmax(output, dim=2)
+        # output = F.log_softmax(output, dim=2)
         
         # Return (T, B, C) directly for CTC loss
         return output.permute(1, 0, 2)
