@@ -69,6 +69,9 @@ class CNNBiLSTMCTC(nn.Module):
         # Reshape back to (B, T, 512)
         cnn_features = features.view(batch_size, timesteps, -1)
 
+        # Ensure cnn_features is on the same device as LSTM
+        cnn_features = cnn_features.to(next(self.lstm.parameters()).device)
+
         # Use packed sequences for variable length
         if video_lengths is not None:
             # Pack the sequence to ignore padding
