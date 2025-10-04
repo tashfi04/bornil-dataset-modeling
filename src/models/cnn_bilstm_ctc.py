@@ -56,21 +56,22 @@ class CNNBiLSTMCTC(nn.Module):
         """
         batch_size, channels, timesteps, height, width = x.size()
 
+        # Move input to LSTM device immediately
+        device = next(self.lstm.parameters()).device
+        x = x.to(device)
+
         # OPTIMIZATION: Process all frames in one batch
         # Reshape to (B*T, C, H, W) - combine batch and time dimensions
         x_flat = x.permute(0, 2, 1, 3, 4).contiguous()  # (B, T, C, H, W)
-        x_flat = x_flat.view(-1, channels, height, width)  # (B*T, C, H, W)
+        x_flat = x_flat.reshape(-1, channels, height, width)  # (B*T, C, H, W)
 
         # Process all frames through CNN at once
         features = self.cnn(x_flat)  # (B*T, 512, H', W')
         features = self.adaptive_pool(features)  # (B*T, 512, 1, 1)
-        features = features.view(batch_size * timesteps, -1)  # (B*T, 512)
+        features = features.flatten(1)  # (B*T, 512)
 
         # Reshape back to (B, T, 512)
-        cnn_features = features.view(batch_size, timesteps, -1)
-
-        # Ensure cnn_features is on the same device as LSTM
-        cnn_features = cnn_features.to(next(self.lstm.parameters()).device)
+        cnn_features = features.reshape(batch_size, timesteps, -1)
 
         # Use packed sequences for variable length
         if video_lengths is not None:

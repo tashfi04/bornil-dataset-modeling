@@ -48,11 +48,15 @@ class CTCTrainer(BaseTrainer):
         
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch:03d} [Train]')
         for batch_idx, batch in enumerate(pbar):
-            # Move data to device
-            videos = batch['videos'].to(self.config.device)
-            text_targets = batch['text_targets'].to(self.config.device)  # 1D targets
-            video_lengths = batch['video_lengths'].to(self.config.device)
-            text_lengths = batch['text_lengths'].to(self.config.device)
+
+            # OPTIMIZATION: Move entire batch to GPU once
+            batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                    for k, v in batch.items()}
+
+            videos = batch['videos']
+            text_targets = batch['text_targets']  # 1D targets
+            video_lengths = batch['video_lengths']
+            text_lengths = batch['text_lengths']
             
             # Forward pass with video lengths
             self.optimizer.zero_grad()
@@ -86,10 +90,15 @@ class CTCTrainer(BaseTrainer):
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
             for batch in pbar:
-                videos = batch['videos'].to(self.config.device)
-                text_targets = batch['text_targets'].to(self.config.device)  # 1D targets
-                video_lengths = batch['video_lengths'].to(self.config.device)
-                text_lengths = batch['text_lengths'].to(self.config.device)
+
+                # OPTIMIZATION: Move entire batch to GPU once
+                batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch.items()}
+
+                videos = batch['videos']
+                text_targets = batch['text_targets']  # 1D targets
+                video_lengths = batch['video_lengths']
+                text_lengths = batch['text_lengths']
                 
                 outputs = self.model(videos, video_lengths)
                 loss = self.criterion(
@@ -193,8 +202,12 @@ class CTCTrainer(BaseTrainer):
         
         with torch.no_grad():
             for batch in self.val_loader:
-                videos = batch['videos'].to(self.config.device)
-                video_lengths = batch['video_lengths'].to(self.config.device)
+                # Move input to LSTM device immediately
+                batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch.items()}
+
+                videos = batch['videos']
+                video_lengths = batch['video_lengths']
                 text_labels = batch['text_labels']
                 
                 outputs = self.model(videos, video_lengths)
