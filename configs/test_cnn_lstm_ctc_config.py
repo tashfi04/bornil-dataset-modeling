@@ -16,7 +16,6 @@ class TestConfig:
     num_epochs = 5          # Just 5 epochs for testing
 
     # Video processing for testing
-    num_frames = 16
     frame_size = (112, 112)
     max_frames = 300
 

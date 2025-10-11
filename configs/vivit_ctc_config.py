@@ -5,7 +5,6 @@ class ViViTCTCConfig:
     model_name = "google/vivit-b-16x2-kinetics400"
     
     # Architecture-specific
-    num_frames = 32  # ViViT can handle more frames
     frame_size = (224, 224)
     
     # Training adjustments

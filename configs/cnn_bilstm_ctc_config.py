@@ -15,7 +15,6 @@ class CNNLSTMCTCConfig:
     batch_size = 4
     
     # Video processing for this model
-    num_frames = 16 # TODO: ignore for now, remove later if not needed
     frame_size = (112, 112)
 
 # Create a combined config

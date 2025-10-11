@@ -77,8 +77,7 @@ class BdSLDataset(Dataset):
                 if attempt == max_attempts - 1:  # Last attempt failed
                     logger.error(f"Failed to load sample {original_idx} after {max_attempts} attempts")
                     # Return a dummy sample that won't break training but mark it as failed
-                    dummy_video = torch.zeros((3, self.config.num_frames, 
-                                            self.config.frame_size[0], self.config.frame_size[1]))
+                    dummy_video = torch.zeros((3, 1, self.config.frame_size[0], self.config.frame_size[1]))
                     dummy_text = ""
                     dummy_seq = torch.LongTensor([0])  # Blank token
                     return {

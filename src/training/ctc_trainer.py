@@ -27,7 +27,7 @@ class CTCTrainer(BaseTrainer):
         self.num_classes = len(self.vocab['char_to_id'])
         
         self.logger.info(f"Vocabulary size: {self.num_classes}")
-        self.logger.info(f"Video parameters: {self.config.num_frames} frames, {self.config.frame_size} resolution")
+        self.logger.info(f"Video parameters: variable length (max_frames={self.config.max_frames}), {self.config.frame_size} resolution")
         
     def setup_model(self):
         """Setup CTC model - to be implemented by specific model trainers"""

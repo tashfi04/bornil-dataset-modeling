@@ -24,7 +24,6 @@ class BaseConfig:
     random_seed = 42
     
     # Video processing (default values, overridden by model-specific configs)
-    num_frames = 16         # 32
     max_frames = 1200        # Maximum frames to prevent memory issues
     frame_size = (112, 112) # (height, width)
     

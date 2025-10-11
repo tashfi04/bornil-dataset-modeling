@@ -57,8 +57,8 @@ class CNNBiLSTMCTC(nn.Module):
         batch_size, channels, timesteps, height, width = x.size()
 
         # Move input to LSTM device immediately
-        device = next(self.lstm.parameters()).device
-        # device = next(self.parameters()).device
+        device = next(self.parameters()).device
+        # device = next(self.lstm.parameters()).device
         x = x.to(device)
 
         # OPTIMIZATION: Process all frames in one batch
