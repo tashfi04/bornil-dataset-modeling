@@ -36,7 +36,7 @@ def validate_dataset():
     }
     
     # Check each sample
-    for i, (recording_id, split) enumerate(splits.items()):
+    for i, (recording_id, split) in(splits.items()):
         if i % 1000 == 0:
             print(f"Processed {i}/{len(splits)} samples...")
             
