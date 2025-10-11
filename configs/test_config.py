@@ -1,22 +1,24 @@
 import os
 from configs.base_config import config as base_config
 
-class CNNLSTMCTCConfig:
-    # Model architecture
-    model_type = "cnn_lstm_ctc"
-    cnn_backbone = "resnet34"
-    lstm_hidden_size = 256
-    lstm_layers = 2
+class TestConfig:
+    # Model architecture (lightweight for testing)
+    model_type = "cnn_lstm_ctc_test"
+    cnn_backbone = "resnet18"
+    lstm_hidden_size = 128
+    lstm_layers = 1
     dropout = 0.3
     freeze_cnn_initially = True
-    
-    # Training adjustments specific to this model
+
+    # Training adjustments for testing
     learning_rate = 1e-4
-    batch_size = 4
-    
-    # Video processing for this model
-    num_frames = 16 # TODO: ignore for now, remove later if not needed
+    batch_size = 8          # Increased to utilize GPU better
+    num_epochs = 5          # Just 5 epochs for testing
+
+    # Video processing for testing
+    num_frames = 16
     frame_size = (112, 112)
+    max_frames = 300
 
 # Create a combined config
 class CombinedConfig:
@@ -25,14 +27,14 @@ class CombinedConfig:
         for key in dir(base_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(base_config, key))
-        
-        # Override with model-specific attributes
-        model_config = CNNLSTMCTCConfig()
-        for key in dir(model_config):
-            if not key.startswith('_'):
-                setattr(self, key, getattr(model_config, key))
 
-        # Set model-specific output directory
+        # Override with test-specific attributes
+        test_config = TestConfig()
+        for key in dir(test_config):
+            if not key.startswith('_'):
+                setattr(self, key, getattr(test_config, key))
+
+        # Set test-specific output directory
         self.model_output_dir = os.path.join(self.output_dir, self.model_type)
         os.makedirs(self.model_output_dir, exist_ok=True)
 

@@ -45,9 +45,20 @@ class CTCTrainer(BaseTrainer):
         """Train for one epoch"""
         self.model.train()
         total_loss = 0
+
+        # Track dummy samples for this epoch
+        dummy_samples_this_epoch = 0
+        total_samples_this_epoch = 0
         
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch:03d} [Train]')
         for batch_idx, batch in enumerate(pbar):
+            # Count dummy samples in this batch
+            batch_dummy_samples = sum(1 for path in batch['video_paths'] if path == 'failed_to_load')
+            dummy_samples_this_epoch += batch_dummy_samples
+            total_samples_this_epoch += len(batch['video_paths'])
+
+            if batch_dummy_samples > 0:
+                self.logger.warning(f"Batch {batch_idx}: {batch_dummy_samples}/{len(batch['video_paths'])} are dummy samples!")
 
             # OPTIMIZATION: Move entire batch to GPU once
             batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
@@ -57,7 +68,14 @@ class CTCTrainer(BaseTrainer):
             text_targets = batch['text_targets']  # 1D targets
             video_lengths = batch['video_lengths']
             text_lengths = batch['text_lengths']
-            
+
+            # DEBUG: Length Checking
+            invalid_samples = (video_lengths < text_lengths).sum().item()
+            if invalid_samples > 0:
+                self.logger.warning(f"🚨 Found {invalid_samples} samples with video_length < text_length")
+                self.logger.warning(f"Video lengths: {video_lengths.tolist()}")
+                self.logger.warning(f"Text lengths: {text_lengths.tolist()}")
+
             # Forward pass with video lengths
             self.optimizer.zero_grad()
             outputs = self.model(videos, video_lengths)
@@ -79,6 +97,15 @@ class CTCTrainer(BaseTrainer):
             
             if batch_idx % self.config.log_interval == 0:
                 pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
+
+        # Log dummy sample summary for the epoch
+        if dummy_samples_this_epoch > 0:
+            dummy_percentage = (dummy_samples_this_epoch / total_samples_this_epoch) * 100
+            self.logger.warning(f"🚨 Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
+            if dummy_percentage > 50:
+                self.logger.error("❌ More than 50% dummy samples! Training will not be effective!")
+        else:
+            self.logger.info(f"✅ Epoch {epoch}: All samples loaded successfully")
         
         return total_loss / len(self.train_loader)
     
@@ -86,10 +113,18 @@ class CTCTrainer(BaseTrainer):
         """Validate model"""
         self.model.eval()
         total_loss = 0
+
+        # Track dummy samples for validation
+        dummy_samples_this_epoch = 0
+        total_samples_this_epoch = 0
         
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
             for batch in pbar:
+                # Count dummy samples in this batch
+                batch_dummy_samples = sum(1 for path in batch['video_paths'] if path == 'failed_to_load')
+                dummy_samples_this_epoch += batch_dummy_samples
+                total_samples_this_epoch += len(batch['video_paths'])
 
                 # OPTIMIZATION: Move entire batch to GPU once
                 batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
@@ -109,7 +144,12 @@ class CTCTrainer(BaseTrainer):
                 )
                 total_loss += loss.item()
                 pbar.set_postfix({'ValLoss': f'{loss.item():.4f}'})
-        
+
+        # Log dummy sample summary for validation
+        if dummy_samples_this_epoch > 0:
+            dummy_percentage = (dummy_samples_this_epoch / total_samples_this_epoch) * 100
+            self.logger.warning(f"🚨 Validation Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
+
         return total_loss / len(self.val_loader)
     
     def save_checkpoint(self, epoch, val_loss, is_best=False):

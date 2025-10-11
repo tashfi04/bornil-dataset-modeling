@@ -7,7 +7,7 @@ class BaseConfig:
     
     # Paths
     csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"
-    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset/chunks"
+    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     vocab_path = os.path.join(repo_root, "data", "vocab.json")
@@ -25,12 +25,12 @@ class BaseConfig:
     
     # Video processing (default values, overridden by model-specific configs)
     num_frames = 16         # 32
-    max_frames = 300        # Maximum frames to prevent memory issues
+    max_frames = 1200        # Maximum frames to prevent memory issues
     frame_size = (112, 112) # (height, width)
     
     # Training (default values, overridden by model-specific configs)
     batch_size = 4
-    num_workers = 2
+    num_workers = 4
     learning_rate = 1e-4
     num_epochs = 50
     early_stopping_patience = 10

@@ -58,6 +58,7 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Move input to LSTM device immediately
         device = next(self.lstm.parameters()).device
+        # device = next(self.parameters()).device
         x = x.to(device)
 
         # OPTIMIZATION: Process all frames in one batch
@@ -72,6 +73,9 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Reshape back to (B, T, 512)
         cnn_features = features.reshape(batch_size, timesteps, -1)
+
+        # Ensure ALL tensors are on the same device
+        cnn_features = cnn_features.to(device)
 
         # Use packed sequences for variable length
         if video_lengths is not None:
@@ -92,7 +96,7 @@ class CNNBiLSTMCTC(nn.Module):
         output = self.classifier(lstm_out)  # (B, T, num_classes)
 
         # Log softmax for CTC loss
-        # output = F.log_softmax(output, dim=2)
+        output = F.log_softmax(output, dim=2)
         
         # Return (T, B, C) directly for CTC loss
         return output.permute(1, 0, 2)

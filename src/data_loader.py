@@ -50,10 +50,18 @@ class BdSLDataset(Dataset):
                 # Build full video path using config
                 full_video_path = os.path.join(self.config.chunk_base_path, 
                                             chunk_folder, video_filename)
-                
+
+                # Verify video exists and can be loaded
+                if not os.path.exists(full_video_path):
+                    raise FileNotFoundError(f"Video path doesn't exist: {full_video_path}")
+
                 # Load and preprocess video using config parameters
                 video = self.load_video_frames(full_video_path)
-                
+
+                # Verify video actually loaded and is not a dummy video
+                if video.shape[1] == 0:  # No temporal dimension
+                    raise ValueError("Video loaded with 0 frames")
+
                 # Convert text to integer sequence
                 text_seq = text_to_int(text_label, self.char_to_id)
                 
@@ -61,13 +69,14 @@ class BdSLDataset(Dataset):
                     'video': torch.FloatTensor(video),
                     'text': text_label,
                     'text_seq': torch.LongTensor(text_seq),
-                    'video_path': full_video_path
+                    'video_path': full_video_path,
+                    'loaded_successfully': True  # Flag for successful loading video
                 }
             except Exception as e:
                 logger.warning(f"Error loading sample {idx} (attempt {attempt + 1}/{max_attempts}): {e}")
                 if attempt == max_attempts - 1:  # Last attempt failed
                     logger.error(f"Failed to load sample {original_idx} after {max_attempts} attempts")
-                    # Return a dummy sample that won't break training
+                    # Return a dummy sample that won't break training but mark it as failed
                     dummy_video = torch.zeros((3, self.config.num_frames, 
                                             self.config.frame_size[0], self.config.frame_size[1]))
                     dummy_text = ""
@@ -76,7 +85,8 @@ class BdSLDataset(Dataset):
                         'video': dummy_video,
                         'text': dummy_text,
                         'text_seq': dummy_seq,
-                        'video_path': 'failed_to_load'
+                        'video_path': 'failed_to_load',
+                        'loaded_successfully': False  # Mark as failed to load
                     }
                 # Try next sample
                 idx = (idx + 1) % len(self.df)
@@ -163,7 +173,9 @@ def get_data_loaders(config):
         shuffle=True, 
         num_workers=config.num_workers,
         collate_fn=collate_fn, 
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True,    # Keep workers alive between epochs
+        prefetch_factor=2           # Prefetch batches
     )
     val_loader = DataLoader(
         val_dataset, 
@@ -220,10 +232,55 @@ def collate_fn(batch):
     
     return {
         'videos': padded_videos,
-        'text_targets': text_targets,   # 1D targets for CTCLoss (NEW)
+        'text_targets': text_targets,   # 1D targets for CTCLoss
         'text_seqs': padded_text_seqs,
         'text_labels': text_labels,
         'video_paths': video_paths,
         'video_lengths': video_lengths, # Actual lengths before padding
         'text_lengths': text_lengths
     }
+
+def check_dataset_health(config, sample_size=5):
+    """Check what percentage of videos actually load successfully"""
+    from src.data_loader import get_data_loaders
+
+    train_loader, val_loader, test_loader = get_data_loaders(config)
+
+    def check_loader(loader, name):
+        successful = 0
+        total = 0
+        frame_counts = []
+
+        for i, batch in enumerate(loader):
+            if i >= sample_size:  # Check only sample_size batches
+                break
+
+            for j in range(len(batch['video_paths'])):
+                total += 1
+                if batch['video_paths'][j] != 'failed_to_load':
+                    successful += 1
+                    frame_counts.append(batch['video_lengths'][j].item())
+
+        success_rate = successful / total * 100 if total > 0 else 0
+
+        print(f"{name} set:")
+        print(f"  Successfully loaded: {successful}/{total} ({success_rate:.1f}%)")
+        if frame_counts:
+            print(f"  Frame count stats: min={min(frame_counts)}, max={max(frame_counts)}, avg={sum(frame_counts)/len(frame_counts):.1f}")
+
+        return success_rate, frame_counts
+
+    print("=== DATASET HEALTH CHECK ===")
+    train_success, train_frames = check_loader(train_loader, "Train")
+    val_success, val_frames = check_loader(val_loader, "Validation")
+    test_success, test_frames = check_loader(test_loader, "Test")
+
+    all_frames = train_frames + val_frames + test_frames
+    if all_frames:
+        print(f"\nOverall frame statistics:")
+        print(f"  Min: {min(all_frames)}")
+        print(f"  Max: {max(all_frames)}") 
+        print(f"  Average: {sum(all_frames)/len(all_frames):.1f}")
+        print(f"  95th percentile: {sorted(all_frames)[int(len(all_frames)*0.95)]}")
+
+    return min(train_success, val_success, test_success) > 80  # Return True if >80% success
