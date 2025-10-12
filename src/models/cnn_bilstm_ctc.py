@@ -81,7 +81,7 @@ class CNNBiLSTMCTC(nn.Module):
         if video_lengths is not None:
             # Pack the sequence to ignore padding
             packed_input = nn.utils.rnn.pack_padded_sequence(
-                cnn_features, video_lengths.cpu(), batch_first=True, enforce_sorted=False
+                cnn_features, video_lengths, batch_first=True, enforce_sorted=False
             )
             packed_output, _ = self.lstm(packed_input)
             lstm_out, _ = nn.utils.rnn.pad_packed_sequence(
