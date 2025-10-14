@@ -56,10 +56,8 @@ class CNNBiLSTMCTC(nn.Module):
         """
         batch_size, channels, timesteps, height, width = x.size()
 
-        # Move input to LSTM device immediately
-        device = next(self.parameters()).device
-        # device = next(self.lstm.parameters()).device
-        x = x.to(device)
+        # Use the device of the input tensor to ensure consistency between multipleGPUs
+        device = x.device
 
         # OPTIMIZATION: Process all frames in one batch
         # Reshape to (B*T, C, H, W) - combine batch and time dimensions
@@ -74,16 +72,24 @@ class CNNBiLSTMCTC(nn.Module):
         # Reshape back to (B, T, 512)
         cnn_features = features.reshape(batch_size, timesteps, -1)
 
-        # Ensure ALL tensors are on the same device
-        cnn_features = cnn_features.to(device)
-
         # Use packed sequences for variable length
         if video_lengths is not None:
+            # Ensure video_lengths is on CPU for pack_padded_sequence
+            # Properly hande tensors that may be scattered due to DataParallel
+            if hasattr(self, 'module'):  # We're in DataParallel mode
+                # In DataParallel, work with the original module
+                actual_model = self.module
+            else:
+                actual_model = self
+
             # Pack the sequence to ignore padding
             packed_input = nn.utils.rnn.pack_padded_sequence(
-                cnn_features, video_lengths.cpu(), batch_first=True, enforce_sorted=False
+                cnn_features, 
+                video_lengths.cpu(),  # Always use CPU for lengths
+                batch_first=True, 
+                enforce_sorted=False
             )
-            packed_output, _ = self.lstm(packed_input)
+            packed_output, _ = actual_model.lstm(packed_input)
             lstm_out, _ = nn.utils.rnn.pad_packed_sequence(
                 packed_output, batch_first=True, total_length=timesteps
             )
@@ -103,5 +109,12 @@ class CNNBiLSTMCTC(nn.Module):
     
     def unfreeze_cnn(self):
         """Unfreeze CNN for fine-tuning"""
-        for param in self.cnn.parameters():
-            param.requires_grad = True
+
+        if hasattr(self, 'module'):  # DataParallel wrapper
+            # Access the underlying model
+            for param in self.module.cnn.parameters():
+                param.requires_grad = True
+        else:
+            # Single GPU
+            for param in self.cnn.parameters():
+                param.requires_grad = True

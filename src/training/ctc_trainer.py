@@ -251,7 +251,7 @@ class CTCTrainer(BaseTrainer):
                 text_labels = batch['text_labels']
                 
                 outputs = self.model(videos, video_lengths)
-                
+
                 # Greedy decoding
                 _, max_indices = torch.max(outputs, dim=2)
                 max_indices = max_indices.transpose(0, 1).cpu().numpy()  # (B, T)
