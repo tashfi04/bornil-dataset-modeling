@@ -113,20 +113,55 @@ class BdSLDataset(Dataset):
         if len(frames) == 0:
             raise ValueError(f"No frames loaded from {video_path}")
 
-        # Only do minimal sampling if video is too long (to prevent memory issues)
-        max_frames = getattr(self.config, 'max_frames', 300)  # Set a reasonable maximum
-        if len(frames) > max_frames:
-            # Sample evenly but keep more temporal information
-            indices = np.linspace(0, len(frames)-1, max_frames, dtype=int)
-            frames = [frames[i] for i in indices]
-            logger.info(f"Video too long ({len(frames)} frames), sampled to {max_frames}")
-        
-        # Padding for shorter videos is handled in collate_fn
+        # Get config parameters for sampling
+        target_frames = getattr(self.config, 'num_frames', 160)
+        sampling_strategy = getattr(self.config, 'sampling_strategy', 'uniform')
+
+        # Apply configured sampling strategy
+        if len(frames) > target_frames:
+            if sampling_strategy == "strategic":
+                frames = self._strategic_sample_frames(frames, target_frames)
+            else:
+                frames = self._uniform_sample_frames(frames, target_frames)
+
         # Normalize and reshape
         frames = np.array(frames) / 255.0
         frames = np.transpose(frames, (3, 0, 1, 2))  # (C, T, H, W)
         
         return frames
+
+    def _uniform_sample_frames(self, frames, target_frames):
+        indices = np.linspace(0, len(frames)-1, target_frames, dtype=int)
+        return [frames[i] for i in indices]
+
+    def _strategic_sample_frames(self, frames, target_frames):
+        """Strategic sampling focusing on key segments"""
+        sampling_segments = getattr(self.config, 'sampling_segments', 3)
+        frames_per_segment = target_frames // sampling_segments
+        indices = []
+        
+        for i in range(sampling_segments):
+            # Sample from different segments of the video
+            start = (i * len(frames)) // sampling_segments
+            end = ((i + 1) * len(frames)) // sampling_segments
+            
+            # Ensure we don't sample beyond available frames
+            segment_frames = min(frames_per_segment, end - start)
+            if segment_frames > 0:
+                segment_indices = np.linspace(start, end-1, segment_frames, dtype=int)
+                indices.extend(segment_indices)
+        
+        # If we have leftover frames due to integer division, sample from middle
+        remaining_frames = target_frames - len(indices)
+        if remaining_frames > 0:
+            middle_start = len(frames) // 3
+            middle_end = 2 * len(frames) // 3
+            extra_indices = np.linspace(middle_start, middle_end-1, remaining_frames, dtype=int)
+            indices.extend(extra_indices)
+        
+        # Sort indices to maintain temporal order
+        indices.sort()
+        return [frames[i] for i in indices]
 
 def get_data_loaders(config):
     """

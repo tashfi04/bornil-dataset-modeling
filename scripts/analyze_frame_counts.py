@@ -40,7 +40,7 @@ def analyze_actual_frame_counts():
     all_frame_counts = train_frames + val_frames + test_frames
 
     if not all_frame_counts:
-        print("❌ No videos loaded successfully! Check your paths.")
+        print("No videos loaded successfully! Check your paths.")
         return
 
     print(f"\n=== FRAME COUNT STATISTICS ===")

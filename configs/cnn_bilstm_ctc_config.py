@@ -2,20 +2,27 @@ import os
 from configs.base_config import config as base_config
 
 class CNNLSTMCTCConfig:
-    # Model architecture
+    # CNN architecture
     model_type = "cnn_lstm_ctc"
+
+    # CNN parameters
     cnn_backbone = "resnet34"
     lstm_hidden_size = 256
     lstm_layers = 2
     dropout = 0.3
     freeze_cnn_initially = True
     
-    # Training adjustments specific to this model
+    # Training adjustments
     learning_rate = 1e-4
     batch_size = 4
+    gradient_accumulation_steps = 4  # 1 = no accumulation
+    num_epochs = 50
     
-    # Video processing for this model
+    # Video processing
     frame_size = (112, 112)
+    num_frames = 160  # Explicitly set for CNN-BiLSTM
+    sampling_strategy = "strategic"
+    sampling_segments = 6
 
 # Create a combined config
 class CombinedConfig:

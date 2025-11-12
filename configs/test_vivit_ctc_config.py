@@ -1,9 +1,9 @@
 import os
 from configs.base_config import config as base_config
 
-class ViViTCTCConfig:
-    # Model architecture
-    model_type = "vivit_ctc"
+class TestViViTConfig:
+# Model architecture
+    model_type = "vivit_ctc_test"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
     
     # Model parameters
@@ -11,14 +11,14 @@ class ViViTCTCConfig:
     
     # Training
     learning_rate = 5e-5
-    batch_size = 4
+    batch_size = 2
     gradient_accumulation_steps = 4  # 1 = no accumulation
-    num_epochs = 100
-    warmup_epochs = 10
+    num_epochs = 3
+    warmup_epochs = 2
     
     # Video processing
     frame_size = (224, 224)
-    num_frames = 160
+    num_frames = 64
     sampling_strategy = "strategic"
     sampling_segments = 6
 
@@ -28,14 +28,14 @@ class CombinedConfig:
         for key in dir(base_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(base_config, key))
-
-        # Override with ViViT-specific attributes
-        vivit_config = ViViTCTCConfig()
-        for key in dir(vivit_config):
+        
+        # Override with test-specific attributes
+        test_config = TestViViTConfig()
+        for key in dir(test_config):
             if not key.startswith('_'):
-                setattr(self, key, getattr(vivit_config, key))
+                setattr(self, key, getattr(test_config, key))
 
-        # Set model-specific output directory
+        # Set test-specific output directory
         self.model_output_dir = os.path.join(self.output_dir, self.model_type)
         os.makedirs(self.model_output_dir, exist_ok=True)
 

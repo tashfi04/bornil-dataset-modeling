@@ -4,6 +4,8 @@ from configs.base_config import config as base_config
 class TestConfig:
     # Model architecture (lightweight for testing)
     model_type = "cnn_lstm_ctc_test"
+
+    # CNN parameters (lightweight)
     cnn_backbone = "resnet18"
     lstm_hidden_size = 128
     lstm_layers = 1
@@ -12,12 +14,15 @@ class TestConfig:
 
     # Training adjustments for testing
     learning_rate = 1e-4
-    batch_size = 8          # Increased to utilize GPU better
-    num_epochs = 5          # Just 5 epochs for testing
+    batch_size = 2
+    gradient_accumulation_steps = 4  # 1 = no accumulation
+    num_epochs = 3
 
     # Video processing for testing
     frame_size = (112, 112)
-    max_frames = 300
+    num_frames = 64
+    sampling_strategy = "strategic"
+    sampling_segments = 6
 
 # Create a combined config
 class CombinedConfig:

@@ -24,7 +24,9 @@ class BaseConfig:
     random_seed = 42
     
     # Video processing (default values, overridden by model-specific configs)
-    max_frames = 1200        # Maximum frames to prevent memory issues
+    num_frames = 160        # Target number of frames read from every video
+    sampling_strategy = "strategic"  # "uniform" or "strategic"; default "uniform"
+    sampling_segments = 6  # For strategic sampling: number of segments
     frame_size = (112, 112) # (height, width)
     
     # Training (default values, overridden by model-specific configs)
@@ -34,6 +36,9 @@ class BaseConfig:
     num_epochs = 50
     early_stopping_patience = 10
     grad_clip = 5.0
+
+    # Gradient Accumulation
+    gradient_accumulation_steps = 1  # 1 = no accumulation
     
     # Logging
     log_interval = 10

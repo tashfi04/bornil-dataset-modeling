@@ -15,6 +15,10 @@ class CTCTrainer(BaseTrainer):
         self.setup_data()
         self.setup_model()
         self.setup_optimizer()
+
+        # Gradient accumulation
+        self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
+        self.accumulation_count = 0
         
     def setup_data(self):
         """Setup data loaders for CTC training"""
@@ -27,7 +31,7 @@ class CTCTrainer(BaseTrainer):
         self.num_classes = len(self.vocab['char_to_id'])
         
         self.logger.info(f"Vocabulary size: {self.num_classes}")
-        self.logger.info(f"Video parameters: variable length (max_frames={self.config.max_frames}), {self.config.frame_size} resolution")
+        self.logger.info(f"Video parameters: variable length (num_frames={self.config.num_frames}), {self.config.frame_size} resolution")
         
     def setup_model(self):
         """Setup CTC model - to be implemented by specific model trainers"""
@@ -42,15 +46,20 @@ class CTCTrainer(BaseTrainer):
         self.criterion = nn.CTCLoss(blank=0, zero_infinity=True)
         
     def train_epoch(self, epoch):
-        """Train for one epoch"""
+        """Train for one epoch with optional gradient accumulation"""
         self.model.train()
         total_loss = 0
+        accumulated_loss = 0
 
         # Track dummy samples for this epoch
         dummy_samples_this_epoch = 0
         total_samples_this_epoch = 0
         
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch:03d} [Train]')
+
+        # Reset gradients at start of epoch
+        self.optimizer.zero_grad()
+
         for batch_idx, batch in enumerate(pbar):
             # Count dummy samples in this batch
             batch_dummy_samples = sum(1 for path in batch['video_paths'] if path == 'failed_to_load')
@@ -60,7 +69,7 @@ class CTCTrainer(BaseTrainer):
             if batch_dummy_samples > 0:
                 self.logger.warning(f"Batch {batch_idx}: {batch_dummy_samples}/{len(batch['video_paths'])} are dummy samples!")
 
-            # OPTIMIZATION: Move entire batch to GPU once
+            # Move entire batch to GPU once
             batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
 
@@ -72,12 +81,11 @@ class CTCTrainer(BaseTrainer):
             # DEBUG: Length Checking
             invalid_samples = (video_lengths < text_lengths).sum().item()
             if invalid_samples > 0:
-                self.logger.warning(f"🚨 Found {invalid_samples} samples with video_length < text_length")
+                self.logger.warning(f"Invalid Samples: Found {invalid_samples} samples with video_length < text_length")
                 self.logger.warning(f"Video lengths: {video_lengths.tolist()}")
                 self.logger.warning(f"Text lengths: {text_lengths.tolist()}")
 
             # Forward pass with video lengths
-            self.optimizer.zero_grad()
             outputs = self.model(videos, video_lengths)
             
             # CTC loss calculation
@@ -87,13 +95,39 @@ class CTCTrainer(BaseTrainer):
                 video_lengths,              # Use actual video lengths
                 text_lengths
             )
+
+            # Normalize loss for gradient accumulation
+            if self.gradient_accumulation_steps > 1:
+                loss = loss / self.gradient_accumulation_steps
             
             # Backward pass
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-            self.optimizer.step()
-            
-            total_loss += loss.item()
+
+            accumulated_loss += loss.item() * (self.gradient_accumulation_steps if self.gradient_accumulation_steps > 1 else 1)
+            self.accumulation_count += 1
+
+            # Only step optimizer and clip gradients when we've accumulated enough or at the end of epoch
+            if (self.accumulation_count % self.gradient_accumulation_steps == 0) or (batch_idx + 1 == len(self.train_loader)):
+                
+                # Clip gradients
+                if self.config.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+                
+                # Optimizer step
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                
+                # Update progress bar
+                current_lr = self.optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'Loss': f'{accumulated_loss:.4f}',
+                    'LR': f'{current_lr:.2e}',
+                    'Accum': f'{self.accumulation_count}/{self.gradient_accumulation_steps}'
+                })
+                
+                total_loss += accumulated_loss
+                accumulated_loss = 0
+                self.accumulation_count = 0
             
             if batch_idx % self.config.log_interval == 0:
                 pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
@@ -101,13 +135,17 @@ class CTCTrainer(BaseTrainer):
         # Log dummy sample summary for the epoch
         if dummy_samples_this_epoch > 0:
             dummy_percentage = (dummy_samples_this_epoch / total_samples_this_epoch) * 100
-            self.logger.warning(f"🚨 Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
+            self.logger.warning(f"Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
             if dummy_percentage > 50:
-                self.logger.error("❌ More than 50% dummy samples! Training will not be effective!")
+                self.logger.error("More than 50% dummy samples! Training will not be effective!")
         else:
-            self.logger.info(f"✅ Epoch {epoch}: All samples loaded successfully")
+            self.logger.info(f"Epoch {epoch}: All samples loaded successfully")
+
+        # Calculate average loss
+        num_batches = len(self.train_loader)
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0
         
-        return total_loss / len(self.train_loader)
+        return avg_loss
     
     def validate(self, epoch):
         """Validate model"""
@@ -148,7 +186,7 @@ class CTCTrainer(BaseTrainer):
         # Log dummy sample summary for validation
         if dummy_samples_this_epoch > 0:
             dummy_percentage = (dummy_samples_this_epoch / total_samples_this_epoch) * 100
-            self.logger.warning(f"🚨 Validation Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
+            self.logger.warning(f"Validation Epoch {epoch}: {dummy_samples_this_epoch}/{total_samples_this_epoch} ({dummy_percentage:.1f}%) were dummy samples!")
 
         return total_loss / len(self.val_loader)
     

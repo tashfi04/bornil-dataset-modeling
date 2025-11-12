@@ -106,7 +106,7 @@ def validate_dataset():
     
     # Recommendations
     if total_issues > 0:
-        print(f"\n⚠️  RECOMMENDATIONS:")
+        print(f"\n RECOMMENDATIONS:")
         if issues['missing_files']:
             print("  - Check file paths and fix missing videos")
         if issues['ctc_violations']:
@@ -120,7 +120,7 @@ def validate_dataset():
         print(f"\nRun this to see all problematic files:")
         print(f"  python scripts/validate_dataset.py > validation_report.txt")
     else:
-        print("✅ Dataset is clean! No issues found.")
+        print("Dataset is clean! No issues found.")
     
     return issues
 
