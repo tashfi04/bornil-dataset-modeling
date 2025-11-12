@@ -1,12 +1,12 @@
 from src.training.ctc_trainer import CTCTrainer
-from src.models.vivit_ctc import ViViT_CTC
+from src.models.vivit_ctc_hf import ViViT_CTC_HF
 import torch
 
 class ViViTTrainer(CTCTrainer):
     def setup_model(self):
         """Setup ViViT model with proper multi-GPU handling"""
         # Create the base model
-        base_model = ViViT_CTC(
+        base_model = ViViT_CTC_HF(
             config=self.config,
             num_classes=self.num_classes
         )
