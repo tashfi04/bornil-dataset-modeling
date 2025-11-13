@@ -1,7 +1,7 @@
 import os
 from configs.base_config import config as base_config
 
-class TestConfig:
+class TestCNNBiLSTMConfig:
     # Model architecture (lightweight for testing)
     model_type = "cnn_lstm_ctc_test"
 
@@ -33,7 +33,7 @@ class CombinedConfig:
                 setattr(self, key, getattr(base_config, key))
 
         # Override with test-specific attributes
-        test_config = TestConfig()
+        test_config = TestCNNBiLSTMConfig()
         for key in dir(test_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(test_config, key))

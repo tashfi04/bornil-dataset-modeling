@@ -9,7 +9,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(repo_root)
 
-from configs.test_cnn_lstm_ctc_config import config  # Use test config
+from configs.test_cnn_bilstm_ctc_config import config  # Use test config
 from src.training.cnn_bilstm_trainer import CNNBiLSTMTrainer
 from src.data_loader import check_dataset_health
 

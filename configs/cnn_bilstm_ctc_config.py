@@ -1,7 +1,7 @@
 import os
 from configs.base_config import config as base_config
 
-class CNNLSTMCTCConfig:
+class CNNBiLSTMCTCConfig:
     # CNN architecture
     model_type = "cnn_lstm_ctc"
 
@@ -33,7 +33,7 @@ class CombinedConfig:
                 setattr(self, key, getattr(base_config, key))
         
         # Override with model-specific attributes
-        model_config = CNNLSTMCTCConfig()
+        model_config = CNNBiLSTMCTCConfig()
         for key in dir(model_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(model_config, key))

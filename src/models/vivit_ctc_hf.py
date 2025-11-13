@@ -54,4 +54,3 @@ class ViViT_CTC_HF(nn.Module):
         """Unfreeze ViViT backbone for fine-tuning"""
         for param in self.vivit.parameters():
             param.requires_grad = True
-

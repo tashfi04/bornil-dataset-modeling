@@ -1,7 +1,7 @@
 import os
 from configs.base_config import config as base_config
 
-class TestViViTConfig:
+class TestViViTCTCConfig:
 # Model architecture
     model_type = "vivit_ctc_test"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
@@ -30,7 +30,7 @@ class CombinedConfig:
                 setattr(self, key, getattr(base_config, key))
         
         # Override with test-specific attributes
-        test_config = TestViViTConfig()
+        test_config = TestViViTCTCConfig()
         for key in dir(test_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(test_config, key))
