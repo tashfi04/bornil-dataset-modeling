@@ -1,12 +1,12 @@
 import os
 import json
+import logging
 import cv2
 import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
-import logging
 
 from src.utils.text_utils import text_to_int
 
@@ -124,6 +124,7 @@ class BdSLDataset(Dataset):
             else:
                 frames = self._uniform_sample_frames(frames, target_frames)
 
+        # Padding for shorter videos is handled in collate_fn
         # Normalize and reshape
         frames = np.array(frames) / 255.0
         frames = np.transpose(frames, (3, 0, 1, 2))  # (C, T, H, W)

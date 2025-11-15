@@ -128,9 +128,6 @@ class CTCTrainer(BaseTrainer):
                 total_loss += accumulated_loss
                 accumulated_loss = 0
                 self.accumulation_count = 0
-            
-            if batch_idx % self.config.log_interval == 0:
-                pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
 
         # Log dummy sample summary for the epoch
         if dummy_samples_this_epoch > 0:

@@ -56,6 +56,11 @@ class CNNBiLSTMCTC(nn.Module):
         """
         batch_size, channels, timesteps, height, width = x.size()
 
+        # Video length validation to ensure sampling is working properly
+        if video_lengths is not None and (video_lengths > timesteps).any():
+            invalid_indices = (video_lengths > timesteps).nonzero().squeeze()
+            print(f"🚨 ERROR: Video lengths {video_lengths[invalid_indices]} exceed temporal dimension {timesteps}")
+
         # Use the device of the input tensor to ensure consistency between multipleGPUs
         device = x.device
 

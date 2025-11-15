@@ -5,6 +5,12 @@ import torch
 class ViViTTrainer(CTCTrainer):
     def setup_model(self):
         """Setup ViViT model with proper multi-GPU handling"""
+
+        # Validate ViViT input requirements before creating model
+        if self.config.frame_size != (224, 224):
+            self.logger.error(f"ViViT requires 224x224 input, but config has {self.config.frame_size}")
+            raise ValueError("ViViT frame_size must be (224, 224)")
+
         # Create the base model
         base_model = ViViT_CTC_HF(
             config=self.config,
@@ -35,6 +41,8 @@ class ViViTTrainer(CTCTrainer):
             lr=self.config.learning_rate,
             weight_decay=0.01
         )
+
+        warmup_epochs = getattr(self.config, 'warmup_epochs', 10)
         
         # Learning rate scheduler with warmup
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -42,7 +50,7 @@ class ViViTTrainer(CTCTrainer):
             max_lr=self.config.learning_rate,
             epochs=self.config.num_epochs,
             steps_per_epoch=len(self.train_loader),
-            pct_start=self.config.warmup_epochs / self.config.num_epochs
+            pct_start=warmup_epochs / self.config.num_epochs
         )
-        
+
         self.criterion = torch.nn.CTCLoss(blank=0, zero_infinity=True)
