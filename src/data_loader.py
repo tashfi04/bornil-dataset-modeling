@@ -126,7 +126,7 @@ class BdSLDataset(Dataset):
 
         # Padding for shorter videos is handled in collate_fn
         # Normalize and reshape
-        frames = np.array(frames) / 255.0
+        frames = np.array(frames, dtype=np.float32) / 255.0
         frames = np.transpose(frames, (3, 0, 1, 2))  # (C, T, H, W)
         
         return frames

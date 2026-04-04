@@ -80,21 +80,14 @@ class CNNBiLSTMCTC(nn.Module):
         # Use packed sequences for variable length
         if video_lengths is not None:
             # Ensure video_lengths is on CPU for pack_padded_sequence
-            # Properly hande tensors that may be scattered due to DataParallel
-            if hasattr(self, 'module'):  # We're in DataParallel mode
-                # In DataParallel, work with the original module
-                actual_model = self.module
-            else:
-                actual_model = self
-
             # Pack the sequence to ignore padding
             packed_input = nn.utils.rnn.pack_padded_sequence(
                 cnn_features, 
-                video_lengths.cpu(),  # Always use CPU for lengths
+                video_lengths.to('cpu'),  # Always use CPU for lengths
                 batch_first=True, 
-                enforce_sorted=False
+                enforce_sorted=True
             )
-            packed_output, _ = actual_model.lstm(packed_input)
+            packed_output, _ = self.lstm(packed_input)
             lstm_out, _ = nn.utils.rnn.pad_packed_sequence(
                 packed_output, batch_first=True, total_length=timesteps
             )

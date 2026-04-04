@@ -42,14 +42,14 @@ class ViViTTrainer(CTCTrainer):
             weight_decay=0.01
         )
 
-        warmup_epochs = getattr(self.config, 'warmup_epochs', 10)
-        
         # Learning rate scheduler with warmup
+        warmup_epochs = getattr(self.config, 'warmup_epochs', 10)
+        effective_steps = max(1, len(self.train_loader) // self.gradient_accumulation_steps)
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
             max_lr=self.config.learning_rate,
             epochs=self.config.num_epochs,
-            steps_per_epoch=len(self.train_loader),
+            steps_per_epoch=effective_steps,
             pct_start=warmup_epochs / self.config.num_epochs
         )
 

@@ -59,6 +59,7 @@ class CTCTrainer(BaseTrainer):
 
         # Reset gradients at start of epoch
         self.optimizer.zero_grad()
+        self.accumulation_count = 0
 
         for batch_idx, batch in enumerate(pbar):
             # Count dummy samples in this batch
@@ -72,6 +73,8 @@ class CTCTrainer(BaseTrainer):
             # Move entire batch to GPU once
             batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
+
+            assert text_targets.numel() == text_lengths.sum().item(), f"Mismatch: text_targets has {text_targets.numel()} elements but text_lengths sum to {text_lengths.sum().item()}"
 
             videos = batch['videos']
             text_targets = batch['text_targets']  # 1D targets
@@ -189,9 +192,12 @@ class CTCTrainer(BaseTrainer):
     
     def save_checkpoint(self, epoch, val_loss, is_best=False):
         """Save model checkpoint"""
+
+        model_state_dict = getattr(self.model, 'module', self.model).state_dict()
+
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'val_loss': val_loss,
         }
@@ -238,12 +244,14 @@ class CTCTrainer(BaseTrainer):
                 
                 self.logger.info("Unfreezing CNN backbone for fine-tuning")
                 self.model.unfreeze_cnn()
+
+                base_model = getattr(self.model, 'module', self.model)
                 
                 # Reset optimizer with lower learning rate for fine-tuning
                 self.optimizer = Adam(
-                    [{'params': self.model.cnn.parameters(), 'lr': self.config.learning_rate / 10},
-                    {'params': self.model.lstm.parameters()},
-                    {'params': self.model.classifier.parameters()}],
+                    [{'params': base_model.cnn.parameters(), 'lr': self.config.learning_rate / 10},
+                    {'params': base_model.lstm.parameters()},
+                    {'params': base_model.classifier.parameters()}],
                     lr=self.config.learning_rate
                 )
                 self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
