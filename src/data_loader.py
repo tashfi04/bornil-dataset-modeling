@@ -8,7 +8,7 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 
-from src.utils.text_utils import text_to_int
+from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,14 +25,23 @@ class BdSLDataset(Dataset):
         self.mode = mode
         self.config = config  # Store the config object
         
-        # Load vocabulary
-        with open(self.config.vocab_path, 'r', encoding='utf-8') as f:
-            vocab = json.load(f)
-        self.char_to_id = vocab['char_to_id']
+        # Determine tokenization type
+        self.tokenization_type = getattr(config, 'tokenization_type', 'character')
+
+        # Load tokenizer
+        if self.tokenization_type == 'bpe':
+            self.tokenizer = load_bpe_tokenizer(self.config.bpe_tokenizer_path)
+            self.char_to_id = None   # not used
+        else:  # Default character level tokenization
+            with open(self.config.vocab_path, 'r', encoding='utf-8') as f:
+                vocab = json.load(f)
+            self.char_to_id = vocab['char_to_id']
+            self.tokenizer = None   # not used
         
         logger.info(f"Initialized {mode} dataset with {len(self.df)} samples")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
-        
+        logger.info(f"Tokenization type: {self.tokenization_type}")
+
     def __len__(self):
         return len(self.df)
     
@@ -61,9 +70,11 @@ class BdSLDataset(Dataset):
                 # Verify video actually loaded and is not a dummy video
                 if video.shape[1] == 0:  # No temporal dimension
                     raise ValueError("Video loaded with 0 frames")
-
-                # Convert text to integer sequence
-                text_seq = text_to_int(text_label, self.char_to_id)
+                
+                if self.tokenization_type == 'bpe':
+                    text_seq = text_to_bpe_ids(text_label, self.tokenizer)
+                else:  # Default character level tokenization
+                    text_seq = text_to_int(text_label, self.char_to_id)
                 
                 return {
                     'video': torch.FloatTensor(video),

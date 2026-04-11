@@ -24,6 +24,8 @@ class CNNBiLSTMCTCConfig:
     sampling_strategy = "strategic"
     sampling_segments = 6
 
+    tokenization_type = "character"  # or "bpe"
+
 # Create a combined config
 class CombinedConfig:
     def __init__(self):

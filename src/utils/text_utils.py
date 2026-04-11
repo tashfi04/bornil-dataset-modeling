@@ -1,7 +1,7 @@
-import json
-import re
+import json, re, os, unicodedata
 import pandas as pd
 from collections import Counter
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, normalizers
 
 def normalize_text(text: str) -> str:
     """
@@ -11,6 +11,9 @@ def normalize_text(text: str) -> str:
     - Map special Unicode characters to standard forms
     - Collapse multiple spaces
     """
+
+    # Step 0: Unicode normalization form KC
+    text = unicodedata.normalize('NFKC', text)
 
     # Step 1: Convert text to lowercase first (for Latin alphabets)
     text = text.lower()
@@ -107,3 +110,63 @@ def text_to_int(sentence: str, char_to_id: dict) -> list:
 def int_to_text(int_sequence, id_to_char):
     """Convert integer sequence back to text"""
     return ''.join([id_to_char[idx] for idx in int_sequence if idx in id_to_char])
+
+def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2):
+    """
+    Train a BPE tokenizer on the text column of the CSV
+    """
+    df = pd.read_csv(csv_path)
+    
+    # Normalize all texts using the normalize_text function
+    texts = df['text'].astype(str).apply(normalize_text).tolist()
+    
+    # Write to a temporary file for tokenizer training
+    temp_file = "data/temp_texts_for_bpe.txt"
+    os.makedirs("data", exist_ok=True)
+    with open(temp_file, "w", encoding="utf-8") as f:
+        for t in texts:
+            f.write(t + "\n")
+    
+    # Initialize BPE tokenizer
+    tokenizer = Tokenizer(models.BPE())
+
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
+    
+    trainer = trainers.BpeTrainer(
+        vocab_size=vocab_size,
+        min_frequency=min_frequency,
+        special_tokens=[] # No special tokens during token, then after encoding, add 1 to shift index to 1..N, leaving 0 for blank
+    )
+    
+    tokenizer.train([temp_file], trainer)
+    
+    # Save tokenizer
+    tokenizer.save(output_path)
+    
+    # Clean up temp file
+    os.remove(temp_file)
+    
+    print(f"BPE tokenizer saved to {output_path} with vocab size {tokenizer.get_vocab_size()}")
+    return tokenizer
+
+def load_bpe_tokenizer(tokenizer_path):
+    """Load saved BPE tokenizer"""
+    return Tokenizer.from_file(tokenizer_path)
+
+def text_to_bpe_ids(text, tokenizer, blank_id=0):
+    """
+    Convert normalized text to BPE token IDs, shifting by 1 to reserve 0 for blank
+    """
+    normalized = normalize_text(text)
+    encoded = tokenizer.encode(normalized)
+    # Shift IDs by +1 to reserve 0 for blank
+    return [id + 1 for id in encoded.ids]
+
+def bpe_ids_to_text(ids, tokenizer, blank_id=0):
+    """
+    Convert BPE token IDs (with blank=0) back to text
+    """
+    # Shift back
+    original_ids = [id - 1 for id in ids if id != blank_id]
+    return tokenizer.decode(original_ids)

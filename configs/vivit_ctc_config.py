@@ -22,6 +22,8 @@ class ViViTCTCConfig:
     sampling_strategy = "strategic"
     sampling_segments = 6
 
+    tokenization_type = "bpe"  # or "character"
+
 class CombinedConfig:
     def __init__(self):
         # Copy all base config attributes

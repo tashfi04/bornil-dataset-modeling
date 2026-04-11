@@ -10,7 +10,14 @@ class BaseConfig:
     chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # Character level tokenization
     vocab_path = os.path.join(repo_root, "data", "vocab.json")
+    
+    # BPE tokenization
+    bpe_tokenizer_path = os.path.join(repo_root, "data", "bpe_tokenizer.json") # BPE output
+    bpe_vocab_size = 1000
+    
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")
     
