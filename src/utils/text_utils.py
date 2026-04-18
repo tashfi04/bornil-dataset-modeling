@@ -130,13 +130,13 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
 
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-    tokenizer.decoder = decoders.ByteLevel()
+    # Use a simple whitespace pre‑tokenizer to keep unicode characters intact
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=min_frequency,
-        special_tokens=[] # No special tokens during token, then after encoding, add 1 to shift index to 1..N, leaving 0 for blank
+        special_tokens=[] # No special tokens, then after encoding, add 1 to shift index to 1..N, leaving 0 for blank
     )
     
     tokenizer.train([temp_file], trainer)
