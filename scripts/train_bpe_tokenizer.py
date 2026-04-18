@@ -1,6 +1,7 @@
 import os
 import sys
 import numpy as np
+import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configs.base_config import config
@@ -22,7 +23,6 @@ if __name__ == "__main__":
     tokenizer = load_bpe_tokenizer(output_path)
 
     # Load and normalize all texts
-    import pandas as pd
     df = pd.read_csv(config.csv_path)
     texts = df['text'].astype(str).apply(normalize_text).tolist()
 
@@ -35,6 +35,7 @@ if __name__ == "__main__":
 
 
     print("\n=== BPE Tokenization Statistics ===")
+    print(f"Vocab size: {vocab_size}")
     print(f"Number of sentences analyzed: {len(token_counts)}")
     print(f"Min tokens per sentence: {min(token_counts)}")
     print(f"Max tokens per sentence: {max(token_counts)}")
