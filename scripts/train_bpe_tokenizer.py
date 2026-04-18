@@ -12,6 +12,10 @@ if __name__ == "__main__":
     # Train tokenizer
     output_path = config.bpe_tokenizer_path
     vocab_size = config.bpe_vocab_size
+    
+    if len(sys.argv) > 1:
+        vocab_size = int(sys.argv[1])
+    
     train_bpe_tokenizer(config.csv_path, output_path, vocab_size=vocab_size)
 
     # Load the trained tokenizer to analyze token counts
