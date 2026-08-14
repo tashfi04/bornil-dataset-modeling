@@ -44,6 +44,21 @@ if __name__ == "__main__":
     print(f"95th percentile: {np.percentile(token_counts, 95):.0f}")
     print(f"99th percentile: {np.percentile(token_counts, 99):.0f}")
 
+    # Percentiles and counts
+    total_samples = len(token_counts)
+    p50 = np.percentile(token_counts, 50)
+    p75 = np.percentile(token_counts, 75)
+    p90 = np.percentile(token_counts, 90)
+    p95 = np.percentile(token_counts, 95)
+    p99 = np.percentile(token_counts, 99)
+
+    print(f"\nPercentiles:")
+    print(f"  50th: {p50:.0f} tokens (covers {int(0.5*total_samples)} sentences)")
+    print(f"  75th: {p75:.0f} tokens (covers {int(0.75*total_samples)} sentences)")
+    print(f"  90th: {p90:.0f} tokens (covers {int(0.9*total_samples)} sentences)")
+    print(f"  95th: {p95:.0f} tokens (covers {int(0.95*total_samples)} sentences)")
+    print(f"  99th: {p99:.0f} tokens (covers {int(0.99*total_samples)} sentences)")
+
     # Compare with original character lengths
     char_lengths = df['text'].str.len().tolist()
     avg_compression = np.mean(char_lengths) / np.mean(token_counts)
