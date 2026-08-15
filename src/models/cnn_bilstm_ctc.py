@@ -102,8 +102,9 @@ class CNNBiLSTMCTC(nn.Module):
         # Log softmax for CTC loss
         output = F.log_softmax(output, dim=2)
 
-        # Return (T, B, C) directly for CTC loss
-        return output.permute(1, 0, 2)
+        # Batch stays on dim 0 so nn.DataParallel gathers replicas correctly.
+        # The trainer permutes to (T, B, C) for the CTC loss.
+        return output
 
     def unfreeze_cnn(self):
         """Unfreeze CNN for fine-tuning"""

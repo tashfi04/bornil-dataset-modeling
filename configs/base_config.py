@@ -27,6 +27,15 @@ class BaseConfig:
     # video decoding during training; None decodes on the fly.
     cached_frames_path = None
 
+    # Recordings cleared by scripts/validate_dataset.py. When set, training uses
+    # exactly this list and nothing is filtered at runtime. Model configs override
+    # this because the two models have different CTC limits.
+    valid_samples_path = os.path.join(repo_root, "data", "valid_samples.json")
+
+    # Abort on any unreadable sample or CTC length violation rather than dropping
+    # it and training on partial data
+    strict_data = True
+
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")
 

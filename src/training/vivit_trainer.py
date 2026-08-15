@@ -44,9 +44,12 @@ class ViViTTrainer(CTCTrainer):
     def get_input_lengths(self, outputs, video_lengths):
         """Every clip is compressed to the same number of tubelets, so the CTC
         time axis is constant and unrelated to the raw frame count.
+
+        outputs is (B, T, C).
         """
+        batch_size, time_steps = outputs.size(0), outputs.size(1)
         return torch.full(
-            (outputs.size(1),), outputs.size(0),
+            (batch_size,), time_steps,
             dtype=torch.long, device=outputs.device
         )
 

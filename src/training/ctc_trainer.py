@@ -108,21 +108,14 @@ class CTCTrainer(BaseTrainer):
             assert text_targets.numel() == text_lengths.sum().item(), f"Mismatch: text_targets has {text_targets.numel()} elements but text_lengths sum to {text_lengths.sum().item()}"
 
             with self._autocast():
-                outputs = self.model(videos, video_lengths)
+                outputs = self.model(videos, video_lengths)   # (B, T, C)
 
             input_lengths = self.get_input_lengths(outputs, video_lengths)
+            self._check_ctc_lengths(input_lengths, text_lengths)
 
-            # zero_infinity=True silently zeroes samples where the target is
-            # longer than the input, so report them instead of losing them
-            invalid_samples = (input_lengths < text_lengths).sum().item()
-            if invalid_samples > 0:
-                self.logger.warning(f"Invalid Samples: Found {invalid_samples} samples with input_length < text_length (these contribute no gradient)")
-                self.logger.warning(f"Input lengths: {input_lengths.tolist()}")
-                self.logger.warning(f"Text lengths: {text_lengths.tolist()}")
-
-            # Computed in fp32 for numerical stability
+            # CTC wants (T, B, C), and fp32 for numerical stability
             loss = self.criterion(
-                outputs.float(),            # (T, B, C)
+                outputs.permute(1, 0, 2).float(),
                 text_targets,               # 1D concatenated targets
                 input_lengths,
                 text_lengths
@@ -196,11 +189,15 @@ class CTCTrainer(BaseTrainer):
                 text_lengths = batch['text_lengths']
 
                 with self._autocast():
-                    outputs = self.model(videos, video_lengths)
+                    outputs = self.model(videos, video_lengths)   # (B, T, C)
+
+                input_lengths = self.get_input_lengths(outputs, video_lengths)
+                self._check_ctc_lengths(input_lengths, text_lengths)
+
                 loss = self.criterion(
-                    outputs.float(),
+                    outputs.permute(1, 0, 2).float(),
                     text_targets,   # 1D concatenated targets
-                    self.get_input_lengths(outputs, video_lengths),
+                    input_lengths,
                     text_lengths
                 )
                 total_loss += loss.item()
@@ -288,13 +285,36 @@ class CTCTrainer(BaseTrainer):
         return torch.amp.autocast('cuda', enabled=self.use_amp)
 
     def get_input_lengths(self, outputs, video_lengths):
-        """CTC `input_lengths` for this model.
+        """CTC `input_lengths` for this model, given (B, T, C) outputs.
 
         Assumes the model preserves its time axis frame-for-frame, as CNN-BiLSTM
         does, so the real per-video frame counts apply. Models that resample time
         must override this.
         """
         return video_lengths
+
+    def _check_ctc_lengths(self, input_lengths, text_lengths):
+        """Reject batches CTC cannot align.
+
+        zero_infinity=True would turn these into a zero loss and train on them
+        silently. Pre-validation is supposed to have removed them, so treat any
+        survivor as a bug rather than something to skip.
+        """
+        invalid = (input_lengths < text_lengths)
+        if not invalid.any():
+            return
+
+        count = invalid.sum().item()
+        detail = (f"{count} sample(s) have more target tokens than CTC time steps. "
+                  f"Input lengths: {input_lengths.tolist()}, "
+                  f"text lengths: {text_lengths.tolist()}")
+        if getattr(self.config, 'strict_data', True):
+            raise RuntimeError(
+                detail + ". Lower max_bpe_tokens or raise compressed_frames, then "
+                "re-run scripts/validate_dataset.py. Set strict_data=False to "
+                "train through this."
+            )
+        self.logger.warning(detail + " (these contribute no gradient)")
 
     def _backbone_frozen_initially(self):
         """Whether the run started with a frozen backbone.
@@ -369,11 +389,11 @@ class CTCTrainer(BaseTrainer):
                 text_labels = batch['text_labels']
 
                 with self._autocast():
-                    outputs = self.model(videos, video_lengths)
+                    outputs = self.model(videos, video_lengths)   # (B, T, C)
 
                 # Greedy decoding
                 _, max_indices = torch.max(outputs, dim=2)
-                max_indices = max_indices.transpose(0, 1).cpu().numpy()  # (B, T)
+                max_indices = max_indices.cpu().numpy()  # (B, T)
 
                 # Decode only over the model's real CTC time steps
                 input_lengths_np = self.get_input_lengths(outputs, video_lengths).cpu().numpy()

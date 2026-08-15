@@ -47,7 +47,7 @@ class ViViT_CTC_HF(nn.Module):
       -> TemporalCompressor          T_in -> compressed_frames
       -> pretrained ViViT            position embeddings interpolated to our grid
       -> mean-pool over spatial patches
-      -> linear CTC head over the temporal axis
+      -> linear CTC head over the temporal axis, giving (B, T, num_classes)
 
     The CTC time axis is `compressed_frames // tubelet_t`, which for the 16x2
     checkpoint is `compressed_frames // 2`. That value bounds how many target
@@ -207,7 +207,9 @@ class ViViT_CTC_HF(nn.Module):
         logits = self.classifier(pooled)
         log_probs = F.log_softmax(logits.float(), dim=2)
 
-        return log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
+        # Batch stays on dim 0 so nn.DataParallel gathers replicas correctly.
+        # The trainer permutes to (T, B, C) for the CTC loss.
+        return log_probs
 
     def unfreeze_backbone(self):
         """Unfreeze the ViViT backbone for fine-tuning."""

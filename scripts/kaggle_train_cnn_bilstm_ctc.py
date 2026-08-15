@@ -17,7 +17,6 @@ from src.training.cnn_bilstm_trainer import CNNBiLSTMTrainer
 from src.data_loader import check_dataset_health
 from src.utils.run_info import print_run_summary
 
-
 def main():
     print_run_summary(config, "CNN-BiLSTM-CTC Training (Kaggle test)")
 

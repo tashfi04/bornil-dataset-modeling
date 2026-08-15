@@ -51,6 +51,11 @@ def main():
 
     batch_size = args.batch_size or config.batch_size
     device = config.device
+    print(f"Config: {args.config} ({getattr(config, 'model_type', '?')})")
+    if device.type == 'cuda':
+        props = torch.cuda.get_device_properties(0)
+        print(f"GPU: {props.name}, {props.total_memory / 1024 ** 3:.2f} GB, "
+              f"{torch.cuda.device_count()} visible")
 
     # ---------------------------------------------------- 1. config
     print("\n=== 1. Config arithmetic ===")
@@ -75,6 +80,10 @@ def main():
     print("\n=== 2. Model build ===")
     num_classes = getattr(config, 'bpe_vocab_size', 2000) + 1
     model = ViViT_CTC_HF(config=config, num_classes=num_classes).to(device)
+
+    # from_pretrained leaves the model in eval mode, and HF only applies gradient
+    # checkpointing while training. Match what the trainer does.
+    model.train()
 
     tubelet_t = model.vivit.config.tubelet_size[0]
     expected_steps = compressed // tubelet_t
@@ -118,21 +127,36 @@ def main():
     video_lengths = torch.full((batch_size,), num_frames, dtype=torch.long, device=device)
 
     use_amp = bool(getattr(config, 'use_amp', False)) and device.type == 'cuda'
-    with torch.amp.autocast('cuda', enabled=use_amp):
-        outputs = model(videos, video_lengths)
+    try:
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            outputs = model(videos, video_lengths)
+    except torch.OutOfMemoryError:
+        tokens = model.num_temporal * model.num_spatial
+        print(f"{FAIL} forward pass ran out of memory at batch_size={batch_size}")
+        print(f"  This config needs {tokens} ViViT tokens per sample.")
+        print(f"  Options, cheapest first:")
+        print(f"    - lower batch_size (raise gradient_accumulation_steps to compensate)")
+        print(f"    - set frame_size to (160, 160): {tokens} -> "
+              f"{model.num_temporal * (frame_h // 16) ** 2 // 4} tokens")
+        print(f"    - lower compressed_frames (also shortens the CTC axis, so "
+              f"max_bpe_tokens must drop with it)")
+        print(f"    - confirm gradient_checkpointing is True in the config")
+        sys.exit(1)
 
-    print(f"  output shape: {tuple(outputs.shape)}  (expect ({expected_steps}, {batch_size}, {num_classes}))")
+    # Models return batch-first so nn.DataParallel gathers replicas correctly
+    print(f"  output shape: {tuple(outputs.shape)}  (expect ({batch_size}, {expected_steps}, {num_classes}))")
     check("output shape correct",
-          tuple(outputs.shape) == (expected_steps, batch_size, num_classes))
+          tuple(outputs.shape) == (batch_size, expected_steps, num_classes))
 
     # Longest target the filter still allows through
     target_len = min(config.max_bpe_tokens, expected_steps)
     text_lengths = torch.full((batch_size,), target_len, dtype=torch.long)
     text_targets = torch.randint(1, num_classes, (batch_size * target_len,), dtype=torch.long)
-    input_lengths = torch.full((batch_size,), outputs.size(0), dtype=torch.long)
+    input_lengths = torch.full((batch_size,), outputs.size(1), dtype=torch.long)
 
     criterion = torch.nn.CTCLoss(blank=0, zero_infinity=True)
-    loss = criterion(outputs.float().cpu(), text_targets, input_lengths, text_lengths)
+    log_probs = outputs.permute(1, 0, 2).float().cpu()   # CTC wants (T, B, C)
+    loss = criterion(log_probs, text_targets, input_lengths, text_lengths)
     print(f"  CTC loss (target_len={target_len}): {loss.item():.4f}")
     check("CTC loss is finite and non-zero",
           torch.isfinite(loss) and loss.item() > 0,

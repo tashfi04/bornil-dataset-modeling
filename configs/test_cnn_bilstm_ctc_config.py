@@ -27,6 +27,8 @@ class TestCNNBiLSTMConfig:
 
     tokenization_type = "character"  # or "bpe"
 
+    valid_samples_path = os.path.join(base_config.repo_root, "data", "valid_samples_cnn_bilstm.json")
+
 # Create a combined config
 class CombinedConfig:
     def __init__(self):

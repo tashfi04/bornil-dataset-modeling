@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+from functools import partial
+
 import cv2
 import torch
 import numpy as np
@@ -9,6 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids
 from src.utils.frame_cache import cache_path, read_cached_frames
+from src.utils.ctc_limits import ctc_time_steps, target_token_limit
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,6 +85,14 @@ class BdSLDataset(Dataset):
             self.char_to_id = vocab['char_to_id']
             self.tokenizer = None   # not used
 
+        # In strict mode a sample that fails to load aborts the run instead of
+        # being dropped, so training never silently proceeds on partial data
+        self.strict = bool(getattr(config, 'strict_data', True))
+
+        # Recordings cleared by scripts/validate_dataset.py. When present this is
+        # the authoritative list and no further filtering happens at runtime.
+        self.approved = self._load_approved_samples()
+
         # When set, frames come from the cache built by
         # scripts/preprocess_cache_frames.py instead of being decoded per epoch
         self.cache_root = getattr(config, 'cached_frames_path', None) or None
@@ -93,6 +104,62 @@ class BdSLDataset(Dataset):
         logger.info(f"Initialized {mode} dataset with {len(self.valid_indices)} valid samples (out of {len(self.df)})")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
         logger.info(f"Tokenization type: {self.tokenization_type}")
+
+    def _load_approved_samples(self):
+        """Read the valid-sample list written by scripts/validate_dataset.py."""
+        path = getattr(self.config, 'valid_samples_path', None)
+        if not path:
+            return None
+        if not os.path.exists(path):
+            # Falling back still filters missing files and over-long targets, but
+            # cannot catch a video that fails to decode
+            logger.warning(
+                f"No pre-validation list at {path}; filtering at load time instead. "
+                f"Run scripts/validate_dataset.py to check every video up front."
+            )
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+
+        # These decide which samples are valid at all, so a mismatch means the
+        # list admits samples this model's CTC axis cannot align (or excludes
+        # samples it could have used).
+        critical = {
+            'tokenization': getattr(self.config, 'tokenization_type', 'character'),
+            'ctc_steps': ctc_time_steps(self.config),
+            'token_limit': target_token_limit(self.config),
+        }
+        mismatched = {
+            key: (payload[key], current)
+            for key, current in critical.items()
+            if key in payload and payload[key] != current
+        }
+        if mismatched:
+            details = ', '.join(
+                f"{key}={recorded} (config has {current})"
+                for key, (recorded, current) in mismatched.items()
+            )
+            message = (f"{path} was generated with {details}. Re-run "
+                       f"scripts/validate_dataset.py for this config.")
+            if self.strict:
+                raise RuntimeError(message)
+            logger.warning(message)
+
+        # num_frames does not change validity, only whether short videos get
+        # zero-padded, so it is worth reporting but not worth refusing to run
+        recorded_frames = payload.get('num_frames')
+        if recorded_frames is not None and recorded_frames != self.config.num_frames:
+            logger.info(
+                f"{path} was generated with num_frames={recorded_frames}; this run "
+                f"uses {self.config.num_frames}. The sample list is still valid."
+            )
+
+        if payload.get('quick'):
+            logger.warning(f"{path} was generated with --quick, so undecodable "
+                           f"videos may not have been caught")
+
+        return set(payload['valid'])
 
     def _source_path(self, row):
         """Cached clip if a cache is configured, otherwise the raw video."""
@@ -113,18 +180,29 @@ class BdSLDataset(Dataset):
         full_video_path = self._source_path(row)
 
 
+        # Pre-validation should have removed anything unreadable, so a failure
+        # here means the dataset changed or a file is corrupt
         max_attempts = 3
         video = None
+        last_error = None
         for attempt in range(max_attempts):
             try:
-                # Load video (should not produce any error since it was pre-validated)
                 video = self.load_video_frames(full_video_path)
                 break
             except Exception as e:
+                last_error = e
                 logger.warning(f"Error loading video {full_video_path} (attempt {attempt + 1}/{max_attempts}): {e}")
-                if attempt == max_attempts - 1:  # Last attempt failed
-                    logger.error(f"Failed to load video {full_video_path} after {max_attempts} attempts")
-                    return None
+
+        if video is None:
+            message = (f"Failed to load {full_video_path} after {max_attempts} attempts: "
+                       f"{last_error}")
+            if self.strict:
+                raise RuntimeError(
+                    message + ". Re-run scripts/validate_dataset.py to refresh the "
+                    "valid-sample list, or set strict_data=False to skip such samples."
+                )
+            logger.error(message)
+            return None
 
         # Convert text to integer sequence
         if self.tokenization_type == 'bpe':
@@ -190,11 +268,23 @@ class BdSLDataset(Dataset):
         )
 
     def _build_valid_indices(self):
+        """Indices of the samples this split will actually train on."""
+        if self.approved is not None:
+            valid_indices = [
+                idx for idx in range(len(self.df))
+                if self.df.iloc[idx]['recording'] in self.approved
+            ]
+            logger.info(
+                f"{self.mode}: {len(valid_indices)} / {len(self.df)} samples "
+                f"approved by the pre-validation list"
+            )
+            return valid_indices
+
         valid_indices = []
         dropped_bpe = 0
         missing_videos = 0
 
-        for idx in range (len(self.df)):
+        for idx in range(len(self.df)):
             row = self.df.iloc[idx]
             full_video_path = self._source_path(row)
 
@@ -206,7 +296,6 @@ class BdSLDataset(Dataset):
             if self.tokenization_type == 'bpe':
                 try:
                     bpe_ids = text_to_bpe_ids(row['text'], self.tokenizer)
-
                     if len(bpe_ids) > self.config.max_bpe_tokens:
                         dropped_bpe += 1
                         continue
@@ -254,6 +343,8 @@ def get_data_loaders(config):
 
     logger.info(f"Using fixed splits - Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
+    batch_collate = partial(collate_fn, strict=bool(getattr(config, 'strict_data', True)))
+
     # Create datasets
     train_dataset = BdSLDataset(train_df, config, 'train')
     val_dataset = BdSLDataset(val_df, config, 'val')
@@ -265,7 +356,7 @@ def get_data_loaders(config):
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=config.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=batch_collate,
         pin_memory=True,
         persistent_workers=True,    # Keep workers alive between epochs
         prefetch_factor=2           # Prefetch batches
@@ -275,7 +366,7 @@ def get_data_loaders(config):
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=config.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=batch_collate,
         pin_memory=True
     )
     test_loader = DataLoader(
@@ -283,16 +374,25 @@ def get_data_loaders(config):
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=config.num_workers,
-        collate_fn=collate_fn,
+        collate_fn=batch_collate,
         pin_memory=True
     )
 
     return train_loader, val_loader, test_loader
 
-def collate_fn(batch):
-    """Custom collate function to handle variable length videos and text sequences"""
-    # Filter out None values from failed samples
+def collate_fn(batch, strict=True):
+    """Collate variable-length videos and text sequences into a padded batch."""
+    dropped = sum(1 for b in batch if b is None)
+    if dropped and strict:
+        raise RuntimeError(
+            f"{dropped} of {len(batch)} samples failed to load. Re-run "
+            "scripts/validate_dataset.py, or set strict_data=False to train on "
+            "the remainder."
+        )
+
     batch = [b for b in batch if b is not None]
+    if dropped:
+        logger.error(f"Dropped {dropped} unreadable sample(s) from this batch")
 
     if len(batch) == 0:
         raise RuntimeError("Empty batch received in collate_fn!!!")

@@ -32,6 +32,10 @@ class ViViTCTCConfig:
 
     tokenization_type = "bpe"  # or "character"
 
+    # Shared with the Kaggle test config: both compress to 64 frames, so the CTC
+    # axis and token limit match and the same validated list applies.
+    valid_samples_path = os.path.join(base_config.repo_root, "data", "valid_samples_vivit.json")
+
 class CombinedConfig:
     def __init__(self):
         # Copy all base config attributes
