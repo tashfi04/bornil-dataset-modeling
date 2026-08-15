@@ -11,13 +11,13 @@ class CNNBiLSTMCTCConfig:
     lstm_layers = 2
     dropout = 0.3
     freeze_cnn_initially = True
-    
+
     # Training adjustments
     learning_rate = 1e-4
     batch_size = 4
     gradient_accumulation_steps = 4  # 1 = no accumulation
     num_epochs = 50
-    
+
     # Video processing
     frame_size = (112, 112)
     num_frames = 160  # Explicitly set for CNN-BiLSTM
@@ -33,7 +33,7 @@ class CombinedConfig:
         for key in dir(base_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(base_config, key))
-        
+
         # Override with model-specific attributes
         model_config = CNNBiLSTMCTCConfig()
         for key in dir(model_config):

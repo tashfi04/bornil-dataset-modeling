@@ -1,56 +1,215 @@
 import torch
 import torch.nn as nn
-from transformers import VivitModel, VivitConfig
+import torch.nn.functional as F
+from transformers import VivitModel
+
+
+class TemporalCompressor(nn.Module):
+    """Reduces a long frame sequence to `target_frames`, in pixel space.
+
+    Compression happens before ViViT and keeps the 3-channel image format, so
+    ViViT's pretrained tubelet embedding still receives images. The depthwise
+    conv starts as an identity tap and the resampling is area-averaging, so at
+    initialization the output is exactly the temporal average pool of the input:
+    natural motion-blurred frames rather than noise. The conv then learns how to
+    weight neighbouring frames.
+    """
+
+    def __init__(self, target_frames, kernel_size=5, channels=3):
+        super().__init__()
+        self.target_frames = target_frames
+        self.temporal_conv = nn.Conv3d(
+            channels, channels,
+            kernel_size=(kernel_size, 1, 1),
+            padding=(kernel_size // 2, 0, 0),
+            groups=channels,  # depthwise: mixes along time only, never across RGB
+            bias=False,
+        )
+        with torch.no_grad():
+            self.temporal_conv.weight.zero_()
+            self.temporal_conv.weight[:, :, kernel_size // 2] = 1.0
+
+    def forward(self, x):
+        # x: (B, C, T_in, H, W)
+        x = self.temporal_conv(x)
+        if x.size(2) != self.target_frames:
+            # Averages along time; a no-op spatially since H and W are unchanged
+            x = F.adaptive_avg_pool3d(
+                x, (self.target_frames, x.size(3), x.size(4))
+            )
+        return x
+
 
 class ViViT_CTC_HF(nn.Module):
-    """ViViT model using HuggingFace pre-trained weights with CTC head"""
+    """Pretrained HuggingFace ViViT with a CTC head, for long sign-language clips.
+
+    Pipeline: (B, C, T_in, H, W) raw frames
+      -> TemporalCompressor          T_in -> compressed_frames
+      -> pretrained ViViT            position embeddings interpolated to our grid
+      -> mean-pool over spatial patches
+      -> linear CTC head over the temporal axis
+
+    The CTC time axis is `compressed_frames // tubelet_t`, which for the 16x2
+    checkpoint is `compressed_frames // 2`. That value bounds how many target
+    tokens a sample may have, hence `config.max_bpe_tokens`.
+    """
 
     def __init__(self, config, num_classes):
         super().__init__()
         self.config = config
         self.num_classes = num_classes
 
-        # Load pre-trained ViViT
         model_name = getattr(config, 'vivit_model_name', 'google/vivit-b-16x2-kinetics400')
         self.vivit = VivitModel.from_pretrained(model_name)
 
-        # Freeze backbone initially (configurable)
+        frame_h, frame_w = config.frame_size
+        if frame_h != frame_w:
+            raise ValueError(
+                f"ViViT uses a single image_size, so frames must be square; got {config.frame_size}"
+            )
+
+        self.compressed_frames = getattr(
+            config, 'compressed_frames', getattr(config, 'num_frames', 32)
+        )
+        self.compressor = TemporalCompressor(self.compressed_frames)
+
+        t_patch, h_patch, w_patch = self.vivit.config.tubelet_size
+        if self.compressed_frames % t_patch:
+            raise ValueError(
+                f"compressed_frames ({self.compressed_frames}) must be divisible by "
+                f"the tubelet temporal size ({t_patch})"
+            )
+        if frame_h % h_patch or frame_w % w_patch:
+            raise ValueError(
+                f"frame_size {config.frame_size} must be divisible by the tubelet "
+                f"spatial size ({h_patch}, {w_patch})"
+            )
+
+        self.num_temporal = self.compressed_frames // t_patch
+        self.num_spatial = (frame_h // h_patch) * (frame_w // w_patch)
+
+        # CTC requires input_length >= target_length. zero_infinity=True turns a
+        # violation into a zero loss instead of an error, so check it up front.
+        max_tokens = getattr(config, 'max_bpe_tokens', None)
+        if max_tokens is not None and max_tokens > self.num_temporal:
+            raise ValueError(
+                f"max_bpe_tokens ({max_tokens}) exceeds the CTC time axis "
+                f"({self.num_temporal} steps = compressed_frames {self.compressed_frames} "
+                f"// tubelet {t_patch}). Those samples would contribute no gradient. "
+                f"Either lower max_bpe_tokens to <= {self.num_temporal} or raise "
+                f"compressed_frames to >= {max_tokens * t_patch}."
+            )
+
+        self._retarget_vivit(frame_h, t_patch, h_patch, w_patch)
+
+        if getattr(config, 'gradient_checkpointing', False):
+            # The compressor is trainable and sits before ViViT, so ViViT's
+            # activations are kept for backward even when its weights are frozen.
+            try:
+                self.vivit.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={'use_reentrant': False}
+                )
+            except TypeError:
+                self.vivit.gradient_checkpointing_enable()
+
+        # The compressor and CTC head always stay trainable
         if getattr(config, 'freeze_backbone', True):
             for param in self.vivit.parameters():
                 param.requires_grad = False
 
-        # Get hidden size from ViViT
         hidden_size = self.vivit.config.hidden_size
-
-        # CTC classification head
         self.classifier = nn.Linear(hidden_size, num_classes)
-
-        # Initialize classifier
         nn.init.xavier_uniform_(self.classifier.weight)
+        nn.init.zeros_(self.classifier.bias)
+
+    def _retarget_vivit(self, frame_size, t_patch, h_patch, w_patch):
+        """Resize ViViT's position embeddings to our frame count and resolution.
+
+        The checkpoint carries a fixed grid (32 frames at 224px gives 16x14x14 =
+        3136 patches plus CLS), so a different frame count or resolution would
+        otherwise be a shape mismatch. The pretrained grid is interpolated onto
+        ours, and the size attributes HF validates against are updated to match.
+        """
+        embeddings = self.vivit.embeddings
+        if not hasattr(embeddings, 'position_embeddings'):
+            raise RuntimeError(
+                "This transformers version's VivitEmbeddings has no "
+                "`position_embeddings`; cannot interpolate positions."
+            )
+
+        vconf = self.vivit.config
+        old_t = vconf.num_frames // t_patch
+        old_h = vconf.image_size // h_patch
+        old_w = vconf.image_size // w_patch
+
+        new_t = self.compressed_frames // t_patch
+        new_h = frame_size // h_patch
+        new_w = frame_size // w_patch
+
+        pos = embeddings.position_embeddings.data  # (1, 1 + old_t*old_h*old_w, D)
+        dim = pos.size(-1)
+        expected = old_t * old_h * old_w
+        if pos.size(1) != expected + 1:
+            raise RuntimeError(
+                f"Unexpected position embedding length {pos.size(1)}, expected "
+                f"{expected + 1} for a {old_t}x{old_h}x{old_w} grid + CLS"
+            )
+
+        if (new_t, new_h, new_w) != (old_t, old_h, old_w):
+            cls_pos, grid_pos = pos[:, :1], pos[:, 1:]
+            grid = grid_pos.reshape(1, old_t, old_h, old_w, dim).permute(0, 4, 1, 2, 3)
+            grid = F.interpolate(
+                grid, size=(new_t, new_h, new_w), mode='trilinear', align_corners=False
+            )
+            grid_pos = grid.permute(0, 2, 3, 4, 1).reshape(1, new_t * new_h * new_w, dim)
+            embeddings.position_embeddings = nn.Parameter(
+                torch.cat([cls_pos, grid_pos], dim=1)
+            )
+
+        vconf.num_frames = self.compressed_frames
+        vconf.image_size = frame_size
+        patch_embeddings = embeddings.patch_embeddings
+        patch_embeddings.num_frames = self.compressed_frames
+        patch_embeddings.image_size = frame_size
+        patch_embeddings.num_patches = new_t * new_h * new_w
+
+    @property
+    def output_length(self):
+        """Number of CTC time steps emitted, identical for every sample."""
+        return self.num_temporal
 
     def forward(self, x, video_lengths=None):
-        # x: (B, C, T, H, W) - T should be close to num_frames due to sampling
-        batch_size, channels, num_frames, height, width = x.size()
+        # x: (B, C, T_in, H, W)
+        x = self.compressor(x)
 
-        # Reorder for ViViT: (B, C, T, H, W) -> (B, T, C, H, W)
+        # ViViT expects (B, T, C, H, W)
         x = x.permute(0, 2, 1, 3, 4)
 
-        # Forward pass through pre-trained ViViT
         outputs = self.vivit(x)
+        sequence_output = outputs.last_hidden_state  # (B, 1 + Tt*S, D)
 
-        # Use the last hidden states (sequence output)
-        # Shape: (batch_size, sequence_length, hidden_size)
-        sequence_output = outputs.last_hidden_state
+        # Drop CLS and split the flattened patch grid back into time and space.
+        # HF flattens the conv output as (T, H, W) with T slowest, so time is the
+        # outer dimension.
+        patches = sequence_output[:, 1:, :]
+        batch_size, num_patches, dim = patches.shape
+        expected = self.num_temporal * self.num_spatial
+        if num_patches != expected:
+            raise RuntimeError(
+                f"ViViT returned {num_patches} patches, expected {expected} "
+                f"({self.num_temporal} temporal x {self.num_spatial} spatial)"
+            )
+        patches = patches.view(batch_size, self.num_temporal, self.num_spatial, dim)
 
-        # Classification
-        logits = self.classifier(sequence_output)  # (B, T, num_classes)
+        # Pool away space so CTC runs over time alone
+        pooled = patches.mean(dim=2)  # (B, Tt, D)
 
-        # Log softmax for CTC
-        log_probs = torch.nn.functional.log_softmax(logits, dim=2)
+        logits = self.classifier(pooled)
+        log_probs = F.log_softmax(logits.float(), dim=2)
 
         return log_probs.permute(1, 0, 2)  # (T, B, C) for CTC
 
     def unfreeze_backbone(self):
-        """Unfreeze ViViT backbone for fine-tuning"""
+        """Unfreeze the ViViT backbone for fine-tuning."""
         for param in self.vivit.parameters():
             param.requires_grad = True

@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 import numpy as np
 import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -7,16 +8,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from configs.base_config import config
 from src.utils.text_utils import train_bpe_tokenizer, load_bpe_tokenizer, normalize_text
 
-if __name__ == "__main__":
+def tokenize(vocab_size=config.bpe_vocab_size):
     print("Training BPE Tokenizer")
 
     # Train tokenizer
     output_path = config.bpe_tokenizer_path
-    vocab_size = config.bpe_vocab_size
-    
-    if len(sys.argv) > 1:
-        vocab_size = int(sys.argv[1])
-    
+
     train_bpe_tokenizer(config.csv_path, output_path, vocab_size=vocab_size)
 
     # Load the trained tokenizer to analyze token counts
@@ -68,4 +65,15 @@ if __name__ == "__main__":
     p95_tokens = np.percentile(token_counts, 95)
     print(f"Set ViViT target_frames = {int(p95_tokens)} (95th percentile of BPE tokens)")
     print(f"This ensures CTC can handle {int(p95_tokens)} output steps for 95% of sentences")
-    
+
+def main():
+    parser = argparse.ArgumentParser(description="Script for BPE tokenization")
+    parser.add_argument("--bpe_vocab_size", type=int, default=config.bpe_vocab_size, help="Size of the BPE vocabulary")
+    args = parser.parse_args()
+
+    config.bpe_vocab_size = args.bpe_vocab_size
+
+    tokenize(config.bpe_vocab_size)
+
+if __name__ == "__main__":
+    main()

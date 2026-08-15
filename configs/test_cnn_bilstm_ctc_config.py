@@ -17,6 +17,7 @@ class TestCNNBiLSTMConfig:
     batch_size = 2
     gradient_accumulation_steps = 4  # 1 = no accumulation
     num_epochs = 3
+    metrics_interval = 1  # short run, so report metrics every epoch
 
     # Video processing for testing
     frame_size = (112, 112)

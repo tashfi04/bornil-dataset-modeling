@@ -1,30 +1,34 @@
+"""Train the ViViT-CTC model.
+
+Run scripts/train_bpe_tokenizer.py first; this script expects the tokenizer at
+config.bpe_tokenizer_path to already exist.
+"""
 import os
 import sys
 
-# Add repo root to path
+os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(repo_root)
 
 from configs.vivit_ctc_config import config
 from src.training.vivit_trainer import ViViTTrainer
 from src.data_loader import check_dataset_health
+from src.utils.run_info import print_run_summary
+
 
 def main():
-    print("=== ViViT-CTC Training ===")
-    print(f"Batch size: {config.batch_size}")
-    print(f"Gradient accumulation steps: {config.gradient_accumulation_steps}")
-    print(f"Effective batch size: {config.batch_size * config.gradient_accumulation_steps}")
-    print(f"Frames per video: {config.num_frames}")
-    print(f"Epochs: {config.num_epochs}")
+    print_run_summary(config, "ViViT-CTC Training")
 
     if not check_dataset_health(config):
         print("Dataset health check failed! Fix paths before training.")
         exit(1)
-    else:
-        print("Dataset health check passed!")
+    print("Dataset health check passed!")
 
     trainer = ViViTTrainer(config)
     trainer.train()
+
 
 if __name__ == "__main__":
     main()

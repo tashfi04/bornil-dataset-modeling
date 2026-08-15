@@ -12,25 +12,24 @@ def normalize_text(text: str) -> str:
     - Collapse multiple spaces
     """
 
-    # Step 0: Unicode normalization form KC
+    # Unicode normalization form KC
     text = unicodedata.normalize('NFKC', text)
 
-    # Step 1: Convert text to lowercase first (for Latin alphabets)
+    # Lowercase, which only affects Latin script
     text = text.lower()
-    
-    # STEP 2: Remove control characters and invisible formatting marks
+
+    # Remove control characters and invisible formatting marks
     unwanted_pattern = re.compile(r'[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\uFEFF]')
     text = unwanted_pattern.sub('', text)
-    
-    # STEP 3: Normalize special characters
-    # Convert to standard forms
+
+    # Map special characters to standard forms
     normalization_map = {
         # Spaces
         '\u00A0': ' ',   # Non-breaking space -> regular space
 
         # Quotes and dashes (Latin script)
         '\u2018': "'",      # Left single quote
-        '\u2019': "'",      # Right single quote  
+        '\u2019': "'",      # Right single quote
         '\u201C': '"',      # Left double quote
         '\u201D': '"',      # Right double quote
         '\u2013': '-',      # En dash
@@ -43,9 +42,7 @@ def normalize_text(text: str) -> str:
     for old_char, new_char in normalization_map.items():
         text = text.replace(old_char, new_char)
 
-    # STEP 4: Filter to keep only meaningful characters (whitelist)
-    # Remove other unwanted invisible characters but keep meaningful ones
-    # Keep only: Bangla chars, English letters, numbers, punctuation, and regular whitespace
+    # Optional whitelist: Bangla, Latin letters, digits, basic punctuation, whitespace
     # allowed_pattern = re.compile(
     #     r'[\u0980-\u09FF]|'  # Bangla characters
     #     r'[a-z]|'            # English letters
@@ -53,21 +50,21 @@ def normalize_text(text: str) -> str:
     #     r'[\.\,\?\!\"\'\-\:\;\(\)\[\]]|'  # Basic punctuation
     #     r'[\s]'              # Whitespace (space, tab, newline)
     # )
-    
+
     # text = ''.join(allowed_pattern.findall(text))
-    
-    # Final cleanup: Collapse multiple spaces/tabs/newlines into a single space
+
+    # Collapse runs of whitespace into a single space
     text = re.sub(r'\s+', ' ', text)
-    
+
     return text
 
 def build_vocab_from_csv(csv_path, output_path):
     """Build character vocabulary from normalized text in CSV"""
     df = pd.read_csv(csv_path)
-    
+
     # Normalize all texts
     all_text = ' '.join(df['text'].astype(str).apply(normalize_text).tolist())
-    
+
     # Count characters and create vocabulary
     counter = Counter(all_text)
     vocab = sorted(counter.keys())
@@ -78,21 +75,21 @@ def build_vocab_from_csv(csv_path, output_path):
         print(f"Warning: Found {len(problematic)} potentially problematic characters")
         for char in problematic:
             print(f"  U+{ord(char):04X}: {repr(char)}")
-    
+
     # Create mapping with blank token at index 0 for CTC
     special_tokens = ['<blank>']
     char_to_id = {tok: idx for idx, tok in enumerate(special_tokens)}
     id_to_char = {idx: tok for tok, idx in char_to_id.items()}
-    
+
     for idx, char in enumerate(vocab, start=len(special_tokens)):
         char_to_id[char] = idx
         id_to_char[idx] = char
 
     # Save vocabulary
     with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump({'char_to_id': char_to_id, 'id_to_char': id_to_char}, 
+        json.dump({'char_to_id': char_to_id, 'id_to_char': id_to_char},
                   f, ensure_ascii=False, indent=2)
-    
+
     print(f"Vocabulary created with {len(char_to_id)} tokens")
     print("Characters:", repr(''.join(vocab)))
 
@@ -116,37 +113,39 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     Train a BPE tokenizer on the text column of the CSV
     """
     df = pd.read_csv(csv_path)
-    
+
     # Normalize all texts using the normalize_text function
     texts = df['text'].astype(str).apply(normalize_text).tolist()
-    
-    # Write to a temporary file for tokenizer training
-    temp_file = "data/temp_texts_for_bpe.txt"
-    os.makedirs("data", exist_ok=True)
+
+    # Located next to output_path rather than the CWD, which on Kaggle is not
+    # the repo root
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+    temp_file = os.path.join(output_dir, "temp_texts_for_bpe.txt")
     with open(temp_file, "w", encoding="utf-8") as f:
         for t in texts:
             f.write(t + "\n")
-    
+
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
 
     # Use a simple whitespace pre‑tokenizer to keep unicode characters intact
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-    
+
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=min_frequency,
         special_tokens=[] # No special tokens, then after encoding, add 1 to shift index to 1..N, leaving 0 for blank
     )
-    
+
     tokenizer.train([temp_file], trainer)
-    
+
     # Save tokenizer
     tokenizer.save(output_path)
-    
+
     # Clean up temp file
     os.remove(temp_file)
-    
+
     print(f"BPE tokenizer saved to {output_path} with vocab size {tokenizer.get_vocab_size()}")
     return tokenizer
 

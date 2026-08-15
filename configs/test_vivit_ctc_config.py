@@ -5,22 +5,28 @@ class TestViViTCTCConfig:
 # Model architecture
     model_type = "vivit_ctc_test"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
-    
+
     # Model parameters
     freeze_backbone = True
-    
+
     # Training
     learning_rate = 5e-5
     batch_size = 2
     gradient_accumulation_steps = 4  # 1 = no accumulation
     num_epochs = 3
     warmup_epochs = 2
-    
-    # Video processing
-    frame_size = (224, 224)
-    num_frames = 64
+    metrics_interval = 1  # short run, so report metrics every epoch
+
+    # Fewer frames read than production for faster decoding, but the same
+    # compressed_frames so the position-embedding interpolation path and the
+    # CTC axis match the real run.
+    frame_size = (160, 160)
+    num_frames = 80
+    compressed_frames = 64
     sampling_strategy = "strategic"
     sampling_segments = 6
+
+    gradient_checkpointing = True
 
     tokenization_type = "bpe"  # or "character"
 
@@ -30,7 +36,7 @@ class CombinedConfig:
         for key in dir(base_config):
             if not key.startswith('_'):
                 setattr(self, key, getattr(base_config, key))
-        
+
         # Override with test-specific attributes
         test_config = TestViViTCTCConfig()
         for key in dir(test_config):

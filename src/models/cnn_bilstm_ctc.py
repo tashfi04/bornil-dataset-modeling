@@ -4,10 +4,10 @@ from torchvision.models import resnet18, resnet34
 import torch.nn.functional as F
 
 class CNNBiLSTMCTC(nn.Module):
-    def __init__(self, num_classes, cnn_backbone="resnet18", lstm_hidden_size=256, 
+    def __init__(self, num_classes, cnn_backbone="resnet18", lstm_hidden_size=256,
                  lstm_layers=2, dropout=0.3, freeze_cnn=True):
         super(CNNBiLSTMCTC, self).__init__()
-        
+
         # CNN backbone
         if cnn_backbone == "resnet18":
             cnn_model = resnet18(weights="IMAGENET1K_V1")  # FIXED: modern API
@@ -17,18 +17,18 @@ class CNNBiLSTMCTC(nn.Module):
             self.cnn_feature_size = 512
         else:
             raise ValueError(f"Unsupported CNN backbone: {cnn_backbone}")
-        
+
         # Remove the final layers
         self.cnn = nn.Sequential(*list(cnn_model.children())[:-2])
-        
+
         # Freeze CNN if requested
         if freeze_cnn:
             for param in self.cnn.parameters():
                 param.requires_grad = False
-        
+
         # Adaptive pooling to handle different spatial sizes
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
+
         # Bi-LSTM
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_layers = lstm_layers
@@ -40,14 +40,14 @@ class CNNBiLSTMCTC(nn.Module):
             bidirectional=True,
             dropout=dropout if lstm_layers > 1 else 0
         )
-        
+
         # Classifier
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(lstm_hidden_size * 2, num_classes)
 
         # Initialize classifier weights
         nn.init.xavier_uniform_(self.classifier.weight)
-        
+
     def forward(self, x, video_lengths=None):
         """
         Args:
@@ -59,12 +59,12 @@ class CNNBiLSTMCTC(nn.Module):
         # Video length validation to ensure sampling is working properly
         if video_lengths is not None and (video_lengths > timesteps).any():
             invalid_indices = (video_lengths > timesteps).nonzero().squeeze()
-            print(f"🚨 ERROR: Video lengths {video_lengths[invalid_indices]} exceed temporal dimension {timesteps}")
+            print(f"ERROR: Video lengths {video_lengths[invalid_indices]} exceed temporal dimension {timesteps}")
 
         # Use the device of the input tensor to ensure consistency between multipleGPUs
         device = x.device
 
-        # OPTIMIZATION: Process all frames in one batch
+        # Fold time into the batch dimension so the CNN sees every frame at once
         # Reshape to (B*T, C, H, W) - combine batch and time dimensions
         x_flat = x.permute(0, 2, 1, 3, 4).contiguous()  # (B, T, C, H, W)
         x_flat = x_flat.reshape(-1, channels, height, width)  # (B*T, C, H, W)
@@ -82,9 +82,9 @@ class CNNBiLSTMCTC(nn.Module):
             # Ensure video_lengths is on CPU for pack_padded_sequence
             # Pack the sequence to ignore padding
             packed_input = nn.utils.rnn.pack_padded_sequence(
-                cnn_features, 
+                cnn_features,
                 video_lengths.to('cpu'),  # Always use CPU for lengths
-                batch_first=True, 
+                batch_first=True,
                 enforce_sorted=True
             )
             packed_output, _ = self.lstm(packed_input)
@@ -101,10 +101,10 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Log softmax for CTC loss
         output = F.log_softmax(output, dim=2)
-        
+
         # Return (T, B, C) directly for CTC loss
         return output.permute(1, 0, 2)
-    
+
     def unfreeze_cnn(self):
         """Unfreeze CNN for fine-tuning"""
 

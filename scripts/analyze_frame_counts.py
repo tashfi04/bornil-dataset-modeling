@@ -34,7 +34,7 @@ def analyze_actual_frame_counts():
         return frame_counts
 
     train_frames = collect_frames(train_loader, "Train")
-    val_frames = collect_frames(val_loader, "Validation") 
+    val_frames = collect_frames(val_loader, "Validation")
     test_frames = collect_frames(test_loader, "Test")
 
     all_frame_counts = train_frames + val_frames + test_frames
@@ -70,7 +70,7 @@ def analyze_actual_frame_counts():
 
     # Recommend max_frames based on 95th percentile
     p95 = np.percentile(all_frame_counts, 95)
-    print(f"\n🎯 RECOMMENDATION: Set max_frames = {int(p95)} (95th percentile)")
+    print(f"\nRecommendation: set max_frames = {int(p95)} (95th percentile)")
     print(f"   This would affect only {100-95}% of videos")
 
 if __name__ == "__main__":
