@@ -223,8 +223,24 @@ class BdSLDataset(Dataset):
         sampling_strategy = getattr(self.config, 'sampling_strategy', 'uniform')
 
         if self.cache_root is not None:
-            # Cached clips are already sampled and resized
+            # Cached clips are already sampled and resized, so they are trusted as
+            # they are. Confirm they were built for this config: a cache made at a
+            # different resolution would otherwise reach ViViT unnoticed.
             frames = read_cached_frames(video_path)
+            height, width = frames[0].shape[:2]
+            expected = (self.config.frame_size[0], self.config.frame_size[1])
+            if (height, width) != expected:
+                raise ValueError(
+                    f"Cached frames in {video_path} are {height}x{width} but the "
+                    f"config expects {expected[0]}x{expected[1]}. Rebuild the cache "
+                    f"with scripts/preprocess_cache_frames.py --size {expected[0]}, "
+                    f"or unset cached_frames_path."
+                )
+            if len(frames) > target_frames:
+                frames = sample_frames(
+                    frames, target_frames, sampling_strategy,
+                    getattr(self.config, 'sampling_segments', 3)
+                )
         else:
             cap = cv2.VideoCapture(video_path)
             frames = []

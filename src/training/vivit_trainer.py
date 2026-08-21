@@ -67,7 +67,7 @@ class ViViTTrainer(CTCTrainer):
         # batches plus once at the end of the epoch, so round up; OneCycleLR
         # raises if stepped past total_steps.
         warmup_epochs = getattr(self.config, 'warmup_epochs', 10)
-        effective_steps = max(1, math.ceil(len(self.train_loader) / self.gradient_accumulation_steps))
+        effective_steps = max(1, math.ceil(self.train_batches / self.gradient_accumulation_steps))
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
             max_lr=self.config.learning_rate,

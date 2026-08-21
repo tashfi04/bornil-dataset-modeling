@@ -19,6 +19,9 @@ class TestCNNBiLSTMConfig:
     num_epochs = 3
     metrics_interval = 1  # short run, so report metrics every epoch
 
+    max_train_batches = 200
+    max_val_batches = 50
+
     # Video processing for testing
     frame_size = (112, 112)
     num_frames = 64

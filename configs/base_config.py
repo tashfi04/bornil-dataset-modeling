@@ -40,6 +40,20 @@ class BaseConfig:
     # it and training on partial data
     strict_data = True
 
+    # Resume from checkpoints/last_checkpoint.pth if it exists. Set False to
+    # force a fresh run, or point resume_from at a specific file.
+    auto_resume = True
+    resume_from = None
+
+    # Every checkpoint is a few hundred MB, so only the latest and the best are
+    # kept by default. Enable to also keep one file per epoch.
+    keep_epoch_checkpoints = False
+
+    # Cap batches per epoch. None means a full pass; a small number exercises the
+    # whole training loop quickly, which matters while video is decoded live.
+    max_train_batches = None
+    max_val_batches = None
+
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")
 

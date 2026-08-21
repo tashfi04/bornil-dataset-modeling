@@ -178,7 +178,8 @@ def main():
     # collate_fn zero-pads a batch to its longest clip. Mark real frames as 1.0
     # and padding as 0.0: if the padding leaked into the resampling, the shorter
     # clips would come out darker in proportion to how much was padded.
-    lengths = [21, 64, 100, num_frames]
+    # All within num_frames, since collate_fn never pads beyond the longest clip
+    lengths = sorted({21, num_frames // 4, num_frames // 2, num_frames})
     padded = torch.zeros(len(lengths), 3, num_frames, 4, 4)
     for i, n in enumerate(lengths):
         padded[i, :, :n] = 1.0

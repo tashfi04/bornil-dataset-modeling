@@ -17,6 +17,11 @@ class TestViViTCTCConfig:
     warmup_epochs = 2
     metrics_interval = 1  # short run, so report metrics every epoch
 
+    # Decoding video live costs ~2 s per clip, so a full epoch is ~2 h. These caps
+    # keep the test run to minutes; set both to None for a real pass.
+    max_train_batches = 200
+    max_val_batches = 50
+
     # Fewer frames read than production for faster decoding, but the same
     # compressed_frames so the position-embedding interpolation path and the
     # CTC axis match the real run.

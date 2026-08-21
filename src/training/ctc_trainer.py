@@ -64,9 +64,25 @@ class CTCTrainer(BaseTrainer):
             self.tokenizer = None
             self.num_classes = len(self.vocab['char_to_id'])
 
+        # Optional caps for smoke runs, so the whole loop can be exercised without
+        # decoding the entire dataset
+        self.train_batches = self._capped(len(self.train_loader), 'max_train_batches')
+        self.val_batches = self._capped(len(self.val_loader), 'max_val_batches')
+        if self.train_batches < len(self.train_loader) or self.val_batches < len(self.val_loader):
+            self.logger.warning(
+                f"Batch caps active: {self.train_batches}/{len(self.train_loader)} train, "
+                f"{self.val_batches}/{len(self.val_loader)} val batches per epoch. "
+                f"Set max_train_batches/max_val_batches to None for a full pass."
+            )
+
         self.logger.info(f"Tokenization: {self.tokenization_type}")
         self.logger.info(f"Vocabulary size (num_classes incl. blank): {self.num_classes}")
         self.logger.info(f"Video parameters: variable length (num_frames={self.config.num_frames}), {self.config.frame_size} resolution")
+
+    def _capped(self, total, config_key):
+        """Batch count for one epoch, honouring an optional cap."""
+        cap = getattr(self.config, config_key, None)
+        return min(total, cap) if cap else total
 
     def setup_model(self):
         """Setup CTC model - to be implemented by specific model trainers"""
@@ -94,6 +110,8 @@ class CTCTrainer(BaseTrainer):
         self.accumulation_count = 0
 
         for batch_idx, batch in enumerate(pbar):
+            if batch_idx >= self.train_batches:
+                break
             total_samples_this_epoch += len(batch['video_paths'])
 
             # Move the whole batch to the GPU in one go
@@ -134,7 +152,7 @@ class CTCTrainer(BaseTrainer):
             self.accumulation_count += 1
 
             # Only step optimizer and clip gradients when we've accumulated enough or at the end of epoch
-            if (self.accumulation_count % self.gradient_accumulation_steps == 0) or (batch_idx + 1 == len(self.train_loader)):
+            if (self.accumulation_count % self.gradient_accumulation_steps == 0) or (batch_idx + 1 == self.train_batches):
 
                 # Unscale first so grad_clip applies to unscaled gradients
                 if self.config.grad_clip > 0:
@@ -165,8 +183,7 @@ class CTCTrainer(BaseTrainer):
         self.logger.info(f"Epoch {epoch}: trained on {total_samples_this_epoch} samples")
 
         # Calculate average loss
-        num_batches = len(self.train_loader)
-        avg_loss = total_loss / num_batches if num_batches > 0 else 0
+        avg_loss = total_loss / self.train_batches if self.train_batches > 0 else 0
 
         return avg_loss
 
@@ -178,7 +195,11 @@ class CTCTrainer(BaseTrainer):
 
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
-            for batch in pbar:
+            batches_run = 0
+            for batch_idx, batch in enumerate(pbar):
+                if batch_idx >= self.val_batches:
+                    break
+                batches_run += 1
                 total_samples_this_epoch += len(batch['video_paths'])
 
                 # Move the whole batch to the GPU in one go
@@ -205,35 +226,126 @@ class CTCTrainer(BaseTrainer):
                 total_loss += loss.item()
                 pbar.set_postfix({'ValLoss': f'{loss.item():.4f}'})
 
-        return total_loss / len(self.val_loader)
+        return total_loss / batches_run if batches_run else float('inf')
 
-    def save_checkpoint(self, epoch, val_loss, is_best=False):
-        """Save model checkpoint"""
+    def save_checkpoint(self, epoch, val_loss, is_best=False, training_state=None):
+        """Write a checkpoint that training can be resumed from.
 
-        model_state_dict = getattr(self.model, 'module', self.model).state_dict()
+        `last_checkpoint.pth` is overwritten each epoch so an interrupted run can
+        continue. Per-epoch copies are opt-in via `keep_epoch_checkpoints`,
+        because each one is several hundred MB and they add up fast.
+        """
+        base_model = getattr(self.model, 'module', self.model)
 
         checkpoint = {
             'epoch': epoch,
-            'model_state_dict': model_state_dict,
+            'model_state_dict': base_model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'val_loss': val_loss,
+            'model_type': getattr(self.config, 'model_type', None),
+            'num_classes': self.num_classes,
+            'training_state': training_state or {},
         }
+        if self.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        if self.use_amp:
+            checkpoint['scaler_state_dict'] = self.scaler.state_dict()
 
-        filename = f'checkpoint_epoch_{epoch:03d}.pth'
-        filepath = os.path.join(self.checkpoint_dir, filename)
-        torch.save(checkpoint, filepath)
-
+        torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'last_checkpoint.pth'))
         if is_best:
-            best_path = os.path.join(self.checkpoint_dir, 'best_model.pth')
-            torch.save(checkpoint, best_path)
+            torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'best_model.pth'))
+        if getattr(self.config, 'keep_epoch_checkpoints', False):
+            torch.save(checkpoint, os.path.join(
+                self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth'))
+
+    def _resume_checkpoint_path(self):
+        """An explicit `resume_from` wins; otherwise pick up last_checkpoint.pth."""
+        explicit = getattr(self.config, 'resume_from', None)
+        if explicit:
+            if not os.path.exists(explicit):
+                raise FileNotFoundError(
+                    f"resume_from is set to {explicit}, which does not exist"
+                )
+            return explicit
+        if not getattr(self.config, 'auto_resume', True):
+            return None
+        candidate = os.path.join(self.checkpoint_dir, 'last_checkpoint.pth')
+        return candidate if os.path.exists(candidate) else None
+
+    def load_checkpoint(self, path):
+        """Restore model, optimizer, schedule and loop state from `path`."""
+        self.logger.info(f"Resuming from {path}")
+        checkpoint = torch.load(path, map_location=self.config.device)
+
+        saved_type = checkpoint.get('model_type')
+        current_type = getattr(self.config, 'model_type', None)
+        if saved_type and current_type and saved_type != current_type:
+            raise RuntimeError(
+                f"Checkpoint was written by model_type={saved_type} but this run is "
+                f"{current_type}. Set auto_resume=False or point resume_from elsewhere."
+            )
+        saved_classes = checkpoint.get('num_classes')
+        if saved_classes is not None and saved_classes != self.num_classes:
+            raise RuntimeError(
+                f"Checkpoint has {saved_classes} output classes but this run has "
+                f"{self.num_classes}; the tokenizer or vocabulary changed."
+            )
+
+        state = dict(checkpoint.get('training_state') or {})
+
+        # Unfreezing rebuilds the optimizer with different param groups, so it has
+        # to be replayed before the saved optimizer state will load.
+        if state.get('backbone_unfrozen'):
+            self.logger.info("Checkpoint was taken after unfreezing; replaying that")
+            self._unfreeze_backbone()
+
+        base_model = getattr(self.model, 'module', self.model)
+        base_model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except Exception as exc:
+                self.logger.warning(
+                    f"Could not restore the LR schedule ({exc}); it starts over. "
+                    f"This happens when num_epochs or the dataset size changed."
+                )
+        if self.use_amp and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        state['start_epoch'] = checkpoint['epoch'] + 1
+        return state
 
     def train(self):
         """Main training loop"""
         best_val_loss = float('inf')
         patience_counter = 0
         backbone_unfrozen = False
+        start_epoch = 1
 
-        for epoch in range(1, self.config.num_epochs + 1):
+        resume_path = self._resume_checkpoint_path()
+        if resume_path:
+            state = self.load_checkpoint(resume_path)
+            start_epoch = state.get('start_epoch', 1)
+            best_val_loss = state.get('best_val_loss', float('inf'))
+            patience_counter = state.get('patience_counter', 0)
+            backbone_unfrozen = state.get('backbone_unfrozen', False)
+            self.logger.info(
+                f"Resumed at epoch {start_epoch}/{self.config.num_epochs} "
+                f"(best val loss {best_val_loss:.4f}, patience {patience_counter}, "
+                f"backbone_unfrozen={backbone_unfrozen})"
+            )
+            if start_epoch > self.config.num_epochs:
+                self.logger.info(
+                    "This checkpoint already completed num_epochs; nothing to do. "
+                    "Raise num_epochs to keep training."
+                )
+                return
+        else:
+            self.logger.info("Starting from scratch (no checkpoint to resume)")
+
+        for epoch in range(start_epoch, self.config.num_epochs + 1):
             self.logger.info(f"Epoch {epoch}/{self.config.num_epochs}")
 
             train_loss = self.train_epoch(epoch)
@@ -274,7 +386,11 @@ class CTCTrainer(BaseTrainer):
             else:
                 patience_counter += 1
 
-            self.save_checkpoint(epoch, val_loss, is_best)
+            self.save_checkpoint(epoch, val_loss, is_best, training_state={
+                'best_val_loss': best_val_loss,
+                'patience_counter': patience_counter,
+                'backbone_unfrozen': backbone_unfrozen,
+            })
             self.logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
             # Early stopping
@@ -400,7 +516,9 @@ class CTCTrainer(BaseTrainer):
         all_targets = []
 
         with torch.no_grad():
-            for batch in self.val_loader:
+            for batch_idx, batch in enumerate(self.val_loader):
+                if batch_idx >= self.val_batches:
+                    break
                 # Move input to LSTM device immediately
                 batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                         for k, v in batch.items()}

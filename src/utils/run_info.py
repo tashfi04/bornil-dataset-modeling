@@ -33,3 +33,9 @@ def print_run_summary(config, title):
 
     cache = getattr(config, 'cached_frames_path', None)
     print(f"Frame cache: {cache if cache else 'disabled (decoding video on the fly)'}")
+
+    train_cap = getattr(config, 'max_train_batches', None)
+    val_cap = getattr(config, 'max_val_batches', None)
+    if train_cap or val_cap:
+        print(f"Batch caps: train={train_cap or 'full'}, val={val_cap or 'full'} "
+              f"(partial epochs - not a full training pass)")
