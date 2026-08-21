@@ -5,7 +5,7 @@ from transformers import VivitModel
 
 
 class TemporalCompressor(nn.Module):
-    """Reduces a long frame sequence to `target_frames`, in pixel space.
+    """Resamples a frame sequence to `target_frames`, in pixel space.
 
     Compression happens before ViViT and keeps the 3-channel image format, so
     ViViT's pretrained tubelet embedding still receives images. The depthwise
@@ -13,6 +13,10 @@ class TemporalCompressor(nn.Module):
     initialization the output is exactly the temporal average pool of the input:
     natural motion-blurred frames rather than noise. The conv then learns how to
     weight neighbouring frames.
+
+    Clips shorter than target_frames are stretched rather than padded, and each
+    clip in a batch is resampled over its own real length, so the zero padding
+    added by collate_fn never enters the average.
     """
 
     def __init__(self, target_frames, kernel_size=5, channels=3):
@@ -29,15 +33,42 @@ class TemporalCompressor(nn.Module):
             self.temporal_conv.weight.zero_()
             self.temporal_conv.weight[:, :, kernel_size // 2] = 1.0
 
-    def forward(self, x):
-        # x: (B, C, T_in, H, W)
-        x = self.temporal_conv(x)
-        if x.size(2) != self.target_frames:
-            # Averages along time; a no-op spatially since H and W are unchanged
-            x = F.adaptive_avg_pool3d(
+    def _resample(self, x):
+        """Resample the time axis of one clip to exactly target_frames."""
+        length = x.size(2)
+        if length == self.target_frames:
+            return x
+        if length > self.target_frames:
+            # Area averaging, so no input frame is dropped outright.
+            # Spatially a no-op since H and W are unchanged.
+            return F.adaptive_avg_pool3d(
                 x, (self.target_frames, x.size(3), x.size(4))
             )
-        return x
+        # Shorter than the target: stretch the motion over the full window.
+        # Linear in time beats repeating frames, and beats padding with black.
+        return F.interpolate(
+            x, size=(self.target_frames, x.size(3), x.size(4)),
+            mode='trilinear', align_corners=False,
+        )
+
+    def forward(self, x, video_lengths=None):
+        # x: (B, C, T_in, H, W)
+        x = self.temporal_conv(x)
+
+        # Batches are padded to their longest clip. Resampling across the padding
+        # would average blank frames into every output frame, so each clip is
+        # resampled over its own real length instead.
+        if video_lengths is None:
+            return self._resample(x)
+
+        lengths = [max(1, int(n)) for n in video_lengths.tolist()]
+        if all(n == x.size(2) for n in lengths):
+            return self._resample(x)
+
+        return torch.cat(
+            [self._resample(x[i:i + 1, :, :n]) for i, n in enumerate(lengths)],
+            dim=0,
+        )
 
 
 class ViViT_CTC_HF(nn.Module):
@@ -180,7 +211,7 @@ class ViViT_CTC_HF(nn.Module):
 
     def forward(self, x, video_lengths=None):
         # x: (B, C, T_in, H, W)
-        x = self.compressor(x)
+        x = self.compressor(x, video_lengths)
 
         # ViViT expects (B, T, C, H, W)
         x = x.permute(0, 2, 1, 3, 4)

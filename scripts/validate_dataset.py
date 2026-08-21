@@ -33,7 +33,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.utils.text_utils import (
     normalize_text, text_to_int, text_to_bpe_ids, load_bpe_tokenizer,
 )
-from src.utils.ctc_limits import ctc_time_steps, target_token_limit
+from src.utils.ctc_limits import ctc_time_steps, target_token_limit, required_ctc_steps
 
 cv2.setNumThreads(0)
 
@@ -75,10 +75,10 @@ def check_one(task):
     return {'recording': recording, 'ok': True, 'frames': frames}
 
 
-def target_length(text, tokenization, tokenizer, char_to_id):
+def target_ids(text, tokenization, tokenizer, char_to_id):
     if tokenization == 'bpe':
-        return len(text_to_bpe_ids(text, tokenizer))
-    return len(text_to_int(text, char_to_id))
+        return text_to_bpe_ids(text, tokenizer)
+    return text_to_int(text, char_to_id)
 
 
 def main():
@@ -126,6 +126,7 @@ def main():
 
     # Text checks are cheap, so do them before spending time on decoding
     rejected = {}
+    target_lengths = {}
     to_decode = []
     for _, row in df.iterrows():
         recording = row['recording']
@@ -134,21 +135,30 @@ def main():
             rejected[recording] = 'empty_text'
             continue
 
-        length = target_length(str(row['text']), tokenization, tokenizer, char_to_id)
-        if length == 0:
+        ids = target_ids(str(row['text']), tokenization, tokenizer, char_to_id)
+        if len(ids) == 0:
             rejected[recording] = 'zero_length_target'
             continue
-        if length > token_limit:
-            rejected[recording] = f'target_too_long ({length} > {token_limit})'
+        if len(ids) > token_limit:
+            rejected[recording] = f'target_too_long ({len(ids)} > {token_limit})'
             continue
 
+        # Adjacent duplicate tokens each need a blank between them, so a target
+        # can be short enough yet still unalignable
+        needed = required_ctc_steps(ids)
+        if needed > ctc_steps:
+            rejected[recording] = (f'needs_blank_separators '
+                                   f'({needed} steps needed > {ctc_steps})')
+            continue
+
+        target_lengths[recording] = len(ids)
         video_path = os.path.join(config.chunk_base_path, row['chunk_path'], recording)
         to_decode.append((recording, video_path, args.quick))
 
     print(f"\nPassed text checks: {len(to_decode)}   rejected: {len(rejected)}")
 
     valid = []
-    frame_counts = []
+    frames_by_recording = {}
     started = time.time()
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         futures = [pool.submit(check_one, t) for t in to_decode]
@@ -157,16 +167,13 @@ def main():
             if res['ok']:
                 valid.append(res['recording'])
                 if res.get('frames'):
-                    frame_counts.append(res['frames'])
+                    frames_by_recording[res['recording']] = res['frames']
             else:
                 rejected[res['recording']] = res['reason']
     elapsed = time.time() - started
+    frame_counts = sorted(frames_by_recording.values())
 
-    # Samples with fewer frames than the model consumes get zero-padded, which
-    # feeds blank frames into the temporal average
-    short = 0
-    if frame_counts:
-        short = sum(1 for f in frame_counts if f < config.num_frames)
+    compressed = getattr(config, 'compressed_frames', None)
 
     print(f"\n=== RESULTS ({elapsed/60:.1f} min) ===")
     print(f"Valid samples: {len(valid)} / {len(df)} ({100*len(valid)/len(df):.2f}%)")
@@ -180,11 +187,31 @@ def main():
         print(f"  {reason}: {count}")
 
     if frame_counts:
-        print(f"\nDecoded frame counts: min={min(frame_counts)} "
-              f"max={max(frame_counts)} mean={sum(frame_counts)/len(frame_counts):.0f}")
-        if short:
-            print(f"WARNING: {short} videos have fewer than num_frames "
-                  f"({config.num_frames}) and will be zero-padded")
+        n = len(frame_counts)
+
+        def pct(p):
+            return frame_counts[min(n - 1, int(round((n - 1) * p / 100)))]
+
+        print(f"\nDecoded frame counts over {n} videos:")
+        print(f"  min={frame_counts[0]} max={frame_counts[-1]} "
+              f"mean={sum(frame_counts)/n:.0f}")
+        print("  " + "  ".join(f"p{p}={pct(p)}" for p in (5, 25, 50, 75, 90, 95, 99)))
+
+        below_read = sum(1 for f in frame_counts if f < config.num_frames)
+        print(f"  shorter than num_frames ({config.num_frames}): {below_read} "
+              f"({100*below_read/n:.1f}%) - these are stretched, not padded")
+        if compressed:
+            below_compressed = sum(1 for f in frame_counts if f < compressed)
+            print(f"  shorter than compressed_frames ({compressed}): "
+                  f"{below_compressed} ({100*below_compressed/n:.1f}%) - upsampled in time")
+
+        # Fewer frames than target tokens means less than one frame per token,
+        # which is a data quality question rather than a CTC error
+        starved = [r for r, f in frames_by_recording.items()
+                   if f < target_lengths.get(r, 0)]
+        if starved:
+            print(f"  WARNING: {len(starved)} videos have fewer frames than target "
+                  f"tokens; check these recordings for truncation")
 
     out_path = args.out or config.valid_samples_path
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
@@ -199,6 +226,9 @@ def main():
         'total_rows': len(df),
         'valid': sorted(valid),
         'rejected': rejected,
+        # Kept so the frame distribution can be analysed without decoding again
+        'frames': frames_by_recording,
+        'target_lengths': {r: target_lengths[r] for r in valid if r in target_lengths},
     }
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

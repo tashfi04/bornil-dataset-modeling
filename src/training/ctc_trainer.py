@@ -121,6 +121,8 @@ class CTCTrainer(BaseTrainer):
                 text_lengths
             )
 
+            self._check_ctc_loss(loss, batch_idx)
+
             # Normalize loss for gradient accumulation
             if self.gradient_accumulation_steps > 1:
                 loss = loss / self.gradient_accumulation_steps
@@ -292,6 +294,25 @@ class CTCTrainer(BaseTrainer):
         must override this.
         """
         return video_lengths
+
+    def _check_ctc_loss(self, loss, batch_idx):
+        """Catch batches CTC could not align at all.
+
+        zero_infinity=True replaces an infinite loss with zero, which trains as a
+        no-op. The usual cause is a target needing more steps than the time axis
+        offers, e.g. adjacent duplicate tokens that each need a separating blank.
+        """
+        value = loss.detach()
+        if torch.isfinite(value) and value.item() != 0.0:
+            return
+
+        message = (f"Batch {batch_idx} produced a {'non-finite' if not torch.isfinite(value) else 'zero'} "
+                   f"CTC loss, so it contributes no gradient. Some target is not "
+                   f"alignable within the model's time axis. Re-run "
+                   f"scripts/validate_dataset.py, which rejects these.")
+        if getattr(self.config, 'strict_data', True):
+            raise RuntimeError(message + " Set strict_data=False to train through it.")
+        self.logger.warning(message)
 
     def _check_ctc_lengths(self, input_lengths, text_lengths):
         """Reject batches CTC cannot align.

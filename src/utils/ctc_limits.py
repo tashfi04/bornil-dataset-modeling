@@ -27,3 +27,16 @@ def target_token_limit(config):
     if getattr(config, 'tokenization_type', 'character') == 'bpe':
         return min(getattr(config, 'max_bpe_tokens', steps), steps)
     return steps
+
+
+def required_ctc_steps(ids):
+    """Minimum number of CTC time steps needed to emit `ids`.
+
+    A repeated label needs a blank between the two emissions, otherwise the
+    collapse step would merge them. So each adjacent duplicate pair costs one
+    extra step on top of the sequence length. Filtering on length alone lets
+    through targets CTC cannot align, which zero_infinity=True then turns into a
+    silent zero loss.
+    """
+    duplicates = sum(1 for a, b in zip(ids, ids[1:]) if a == b)
+    return len(ids) + duplicates
