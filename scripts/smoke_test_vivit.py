@@ -39,7 +39,7 @@ def main():
     else:
         from configs.vivit_ctc_config import config
 
-    from src.models.vivit_ctc_hf import ViViT_CTC_HF
+    from src.models.vivit_ctc_hf import ViViT_CTC_HF, interpolate_position_grid
     from src.utils.frame_cache import encode_frames, decode_frames
 
     failures = []
@@ -106,6 +106,60 @@ def main():
     comp_trainable = all(p.requires_grad for p in model.compressor.parameters())
     check("temporal compressor is trainable", comp_trainable)
 
+    # ---------------------------------------------- 2b. interpolation correctness
+    print("\n=== 2b. Position-embedding interpolation ===")
+
+    # Axis ordering is the easy thing to get wrong here, and a transposed axis
+    # would still produce the right shape. Encode each position's own indices
+    # into a synthetic grid and check they survive the round trip in order.
+    old_shape, new_shape = (4, 3, 3), (8, 6, 6)
+    ot, oh, ow = old_shape
+    probe = torch.zeros(1, ot * oh * ow, 3)
+    for t in range(ot):
+        for h in range(oh):
+            for w in range(ow):
+                probe[0, t * oh * ow + h * ow + w] = torch.tensor(
+                    [float(t), float(h), float(w)]
+                )
+    out = interpolate_position_grid(probe, old_shape, new_shape).reshape(*new_shape, 3)
+
+    # Channel 0 encodes time, 1 height, 2 width. Each must increase only along
+    # its own axis and stay flat along the others.
+    t_ok = bool((out[1:, :, :, 0] > out[:-1, :, :, 0]).all())
+    h_ok = bool((out[:, 1:, :, 1] > out[:, :-1, :, 1]).all())
+    w_ok = bool((out[:, :, 1:, 2] > out[:, :, :-1, 2]).all())
+    t_flat = out[:, :, :, 0].std(dim=(1, 2)).max().item()
+    h_flat = out[:, :, :, 1].std(dim=2).max().item()
+    check("time axis maps to time", t_ok)
+    check("height axis maps to height", h_ok)
+    check("width axis maps to width", w_ok)
+    check("axes stay independent", max(t_flat, h_flat) < 1e-5,
+          f"max cross-axis spread {max(t_flat, h_flat):.2e}")
+    check("identity when shape is unchanged",
+          torch.equal(interpolate_position_grid(probe, old_shape, old_shape), probe))
+
+    # The real interpolated grid should still be locally smooth: neighbouring
+    # positions closer to each other than randomly chosen pairs.
+    with torch.no_grad():
+        pos = model.vivit.embeddings.position_embeddings.detach().float().cpu()
+        gt, gh, gw = model.position_grid_shape
+        grid = pos[0, 1:].reshape(gt, gh, gw, -1)
+
+        def mean_dist(a, b):
+            return (a - b).pow(2).sum(-1).sqrt().mean().item()
+
+        temporal = mean_dist(grid[1:], grid[:-1])
+        spatial = mean_dist(grid[:, 1:], grid[:, :-1])
+        flat = grid.reshape(-1, grid.size(-1))
+        perm = torch.randperm(flat.size(0))
+        random_pairs = mean_dist(flat, flat[perm])
+
+    print(f"  mean distance: temporal-adjacent={temporal:.4f} "
+          f"spatial-adjacent={spatial:.4f} random={random_pairs:.4f}")
+    check("neighbouring positions remain similar",
+          temporal < random_pairs and spatial < random_pairs,
+          "adjacent positions should be closer than random ones")
+
     # ---------------------------------------------------- 3. compressor identity
     print("\n=== 3. Compressor initialization ===")
     with torch.no_grad():
@@ -117,6 +171,35 @@ def main():
     check("initialized to exact temporal average pooling", max_dev < 1e-4,
           f"max deviation {max_dev:.2e}")
     print(f"  compressor output shape: {tuple(out.shape)}")
+
+    # ------------------------------------------- 3b. variable-length handling
+    print("\n=== 3b. Padded-batch handling ===")
+
+    # collate_fn zero-pads a batch to its longest clip. Mark real frames as 1.0
+    # and padding as 0.0: if the padding leaked into the resampling, the shorter
+    # clips would come out darker in proportion to how much was padded.
+    lengths = [21, 64, 100, num_frames]
+    padded = torch.zeros(len(lengths), 3, num_frames, 4, 4)
+    for i, n in enumerate(lengths):
+        padded[i, :, :n] = 1.0
+
+    compressor = model.compressor.to('cpu')
+    with torch.no_grad():
+        aware = compressor(padded, torch.tensor(lengths))
+        naive = compressor(padded, None)
+    model.compressor.to(device)
+
+    print(f"  {'real frames':>12} {'length-aware':>14} {'ignoring lengths':>18}")
+    worst = 0.0
+    for i, n in enumerate(lengths):
+        got, ignored = aware[i].mean().item(), naive[i].mean().item()
+        worst = max(worst, abs(got - 1.0))
+        print(f"  {n:>12} {got:>14.4f} {ignored:>18.4f}")
+    check("padding never enters the resampling", worst < 1e-4,
+          f"worst deviation from 1.0 is {worst:.2e}")
+    check("output length is uniform regardless of input length",
+          tuple(aware.shape) == (len(lengths), 3, compressed, 4, 4),
+          f"{tuple(aware.shape)}")
 
     # ---------------------------------------------------- 4. forward/back
     print(f"\n=== 4. Forward + backward (batch_size={batch_size}) ===")

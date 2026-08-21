@@ -155,10 +155,6 @@ class BdSLDataset(Dataset):
                 f"uses {self.config.num_frames}. The sample list is still valid."
             )
 
-        if payload.get('quick'):
-            logger.warning(f"{path} was generated with --quick, so undecodable "
-                           f"videos may not have been caught")
-
         return set(payload['valid'])
 
     def _source_path(self, row):

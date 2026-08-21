@@ -27,6 +27,10 @@ class BaseConfig:
     # video decoding during training; None decodes on the fly.
     cached_frames_path = None
 
+    # Per-video frame counts from scripts/scan_videos.py. Model-independent and
+    # expensive to build, so it is scanned once and reused by every validation.
+    video_stats_path = os.path.join(repo_root, "data", "video_stats.json")
+
     # Recordings cleared by scripts/validate_dataset.py. When set, training uses
     # exactly this list and nothing is filtered at runtime. Model configs override
     # this because the two models have different CTC limits.

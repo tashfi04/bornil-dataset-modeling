@@ -4,6 +4,33 @@ import torch.nn.functional as F
 from transformers import VivitModel
 
 
+def interpolate_position_grid(grid_pos, old_shape, new_shape):
+    """Resize a flattened (time, height, width) position-embedding grid.
+
+    grid_pos is (1, old_t*old_h*old_w, dim) with time slowest and width fastest,
+    matching how HF flattens the tubelet conv output. Returns the same layout at
+    new_shape.
+    """
+    old_t, old_h, old_w = old_shape
+    new_t, new_h, new_w = new_shape
+    dim = grid_pos.size(-1)
+
+    expected = old_t * old_h * old_w
+    if grid_pos.size(1) != expected:
+        raise ValueError(
+            f"grid has {grid_pos.size(1)} positions, expected {expected} "
+            f"for {old_t}x{old_h}x{old_w}"
+        )
+    if (new_t, new_h, new_w) == (old_t, old_h, old_w):
+        return grid_pos
+
+    grid = grid_pos.reshape(1, old_t, old_h, old_w, dim).permute(0, 4, 1, 2, 3)
+    grid = F.interpolate(
+        grid, size=(new_t, new_h, new_w), mode='trilinear', align_corners=False
+    )
+    return grid.permute(0, 2, 3, 4, 1).reshape(1, new_t * new_h * new_w, dim)
+
+
 class TemporalCompressor(nn.Module):
     """Resamples a frame sequence to `target_frames`, in pixel space.
 
@@ -188,14 +215,15 @@ class ViViT_CTC_HF(nn.Module):
 
         if (new_t, new_h, new_w) != (old_t, old_h, old_w):
             cls_pos, grid_pos = pos[:, :1], pos[:, 1:]
-            grid = grid_pos.reshape(1, old_t, old_h, old_w, dim).permute(0, 4, 1, 2, 3)
-            grid = F.interpolate(
-                grid, size=(new_t, new_h, new_w), mode='trilinear', align_corners=False
+            grid_pos = interpolate_position_grid(
+                grid_pos, (old_t, old_h, old_w), (new_t, new_h, new_w)
             )
-            grid_pos = grid.permute(0, 2, 3, 4, 1).reshape(1, new_t * new_h * new_w, dim)
+            # The CLS position carries over unchanged
             embeddings.position_embeddings = nn.Parameter(
                 torch.cat([cls_pos, grid_pos], dim=1)
             )
+
+        self.position_grid_shape = (new_t, new_h, new_w)
 
         vconf.num_frames = self.compressed_frames
         vconf.image_size = frame_size

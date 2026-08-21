@@ -1,32 +1,27 @@
-"""Validate every sample once and record which ones are safe to train on.
+"""Decide which samples a given model can train on, and record the verdict.
 
-The dataset is static, so this runs ahead of training and writes its verdict to
-config.valid_samples_path. The data loader then trains only on the recordings
-listed there, which keeps the training run itself free of surprises.
+The expensive part - decoding every video to get its true frame count - is done
+once by scripts/scan_videos.py and cached. This script reads that cache and
+applies the cheap, model-specific checks, so it finishes in seconds and can be
+re-run freely for each model or config change.
 
-Each sample is rejected for any of:
-  - the video file is missing
-  - the video cannot be decoded, or decodes to zero frames
+A sample is rejected when:
+  - the video file is missing, or could not be decoded
   - the text is empty after normalization
-  - the target is longer than the model's CTC time axis
+  - the target is longer than `max_bpe_tokens`
+  - the target needs more CTC steps than the model produces (adjacent duplicate
+    tokens each need a separating blank)
 
-Frame counts come from an actual decode. cv2.CAP_PROP_FRAME_COUNT is unreliable
-on these webm files because they lack duration metadata.
-
-    python scripts/validate_dataset.py --model vivit
+    python scripts/scan_videos.py                      # once, ~2 h
+    python scripts/validate_dataset.py --model vivit   # seconds
     python scripts/validate_dataset.py --model cnn_bilstm
-    python scripts/validate_dataset.py --model vivit --quick   # skip decoding
 """
 import os
 import sys
 import json
-import time
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import cv2
 import pandas as pd
-from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,45 +29,7 @@ from src.utils.text_utils import (
     normalize_text, text_to_int, text_to_bpe_ids, load_bpe_tokenizer,
 )
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit, required_ctc_steps
-
-cv2.setNumThreads(0)
-
-
-def count_frames(video_path):
-    """Decode a video and return its true frame count."""
-    cap = cv2.VideoCapture(video_path)
-    frames = 0
-    try:
-        while True:
-            ret, _ = cap.read()
-            if not ret:
-                break
-            frames += 1
-    finally:
-        cap.release()
-    return frames
-
-
-def check_one(task):
-    """Worker: decide whether a single recording is usable."""
-    recording, video_path, quick = task
-
-    if not os.path.exists(video_path):
-        return {'recording': recording, 'ok': False, 'reason': 'missing_file'}
-
-    if quick:
-        return {'recording': recording, 'ok': True, 'frames': None}
-
-    try:
-        frames = count_frames(video_path)
-    except Exception as exc:
-        return {'recording': recording, 'ok': False,
-                'reason': f'undecodable ({type(exc).__name__}: {exc})'}
-
-    if frames == 0:
-        return {'recording': recording, 'ok': False, 'reason': 'zero_frames'}
-
-    return {'recording': recording, 'ok': True, 'frames': frames}
+from src.utils.video_stats import load_video_stats, summarize
 
 
 def target_ids(text, tokenization, tokenizer, char_to_id):
@@ -88,9 +45,8 @@ def main():
     parser.add_argument('--out', default=None,
                         help="Where to write the valid-sample list "
                              "(defaults to config.valid_samples_path)")
-    parser.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    parser.add_argument('--quick', action='store_true',
-                        help="Skip decoding; only check existence and text length")
+    parser.add_argument('--stats', default=None,
+                        help="Video stats file (defaults to config.video_stats_path)")
     parser.add_argument('--limit', type=int, default=None,
                         help="Only check the first N rows (debugging)")
     args = parser.parse_args()
@@ -99,6 +55,18 @@ def main():
         from configs.vivit_ctc_config import config
     else:
         from configs.cnn_bilstm_ctc_config import config
+
+    stats_path = args.stats or config.video_stats_path
+    stats = load_video_stats(stats_path)
+    if stats is None:
+        print(f"No usable video stats at {stats_path}.")
+        print("Run this first (it decodes every video once, ~2 h):")
+        print("    python scripts/scan_videos.py")
+        sys.exit(1)
+
+    if stats.get('csv_path') and stats['csv_path'] != config.csv_path:
+        print(f"WARNING: stats were scanned from {stats['csv_path']} "
+              f"but this config reads {config.csv_path}")
 
     tokenization = getattr(config, 'tokenization_type', 'character')
     tokenizer = None
@@ -109,7 +77,6 @@ def main():
         with open(config.vocab_path, 'r', encoding='utf-8') as f:
             char_to_id = json.load(f)['char_to_id']
 
-    # The CTC time axis bounds how many target tokens a sample may have
     ctc_steps = ctc_time_steps(config)
     token_limit = target_token_limit(config)
 
@@ -120,16 +87,32 @@ def main():
     print("=== DATASET VALIDATION ===")
     print(f"Model: {args.model}  tokenization: {tokenization}")
     print(f"CTC time steps: {ctc_steps}   target token limit: {token_limit}")
-    print(f"Rows to check: {len(df)}   workers: {args.workers}")
-    if args.quick:
-        print("QUICK MODE: videos are not decoded, so corrupt files will not be caught")
+    print(f"Rows to check: {len(df)}")
+    print(f"Using video stats: {stats_path} ({len(stats['frames'])} decoded)")
 
-    # Text checks are cheap, so do them before spending time on decoding
+    frames_by_recording = stats['frames']
+    missing_set = set(stats.get('missing', []))
+    undecodable = stats.get('undecodable', {})
+
+    valid = []
     rejected = {}
     target_lengths = {}
-    to_decode = []
+    unscanned = []
+
     for _, row in df.iterrows():
         recording = row['recording']
+
+        if recording in missing_set:
+            rejected[recording] = 'missing_file'
+            continue
+        if recording in undecodable:
+            rejected[recording] = f'undecodable ({undecodable[recording]})'
+            continue
+        if recording not in frames_by_recording:
+            unscanned.append(recording)
+            rejected[recording] = 'not_scanned'
+            continue
+
         text = normalize_text(str(row['text']))
         if not text.strip():
             rejected[recording] = 'empty_text'
@@ -152,30 +135,9 @@ def main():
             continue
 
         target_lengths[recording] = len(ids)
-        video_path = os.path.join(config.chunk_base_path, row['chunk_path'], recording)
-        to_decode.append((recording, video_path, args.quick))
+        valid.append(recording)
 
-    print(f"\nPassed text checks: {len(to_decode)}   rejected: {len(rejected)}")
-
-    valid = []
-    frames_by_recording = {}
-    started = time.time()
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(check_one, t) for t in to_decode]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="Checking videos"):
-            res = fut.result()
-            if res['ok']:
-                valid.append(res['recording'])
-                if res.get('frames'):
-                    frames_by_recording[res['recording']] = res['frames']
-            else:
-                rejected[res['recording']] = res['reason']
-    elapsed = time.time() - started
-    frame_counts = sorted(frames_by_recording.values())
-
-    compressed = getattr(config, 'compressed_frames', None)
-
-    print(f"\n=== RESULTS ({elapsed/60:.1f} min) ===")
+    print(f"\n=== RESULTS ===")
     print(f"Valid samples: {len(valid)} / {len(df)} ({100*len(valid)/len(df):.2f}%)")
     print(f"Rejected: {len(rejected)}")
 
@@ -186,32 +148,36 @@ def main():
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
         print(f"  {reason}: {count}")
 
-    if frame_counts:
-        n = len(frame_counts)
+    if unscanned:
+        print(f"\nWARNING: {len(unscanned)} recordings are not in the stats file. "
+              f"Run scripts/scan_videos.py again to cover them.")
 
-        def pct(p):
-            return frame_counts[min(n - 1, int(round((n - 1) * p / 100)))]
+    kept_frames = [frames_by_recording[r] for r in valid]
+    info = summarize(kept_frames)
+    if info:
+        compressed = getattr(config, 'compressed_frames', None)
+        print(f"\nFrame counts over the {info['count']} valid videos:")
+        print(f"  min={info['min']} max={info['max']} mean={info['mean']:.0f}")
+        print("  " + "  ".join(f"p{p}={v}" for p, v in info['percentiles'].items()))
 
-        print(f"\nDecoded frame counts over {n} videos:")
-        print(f"  min={frame_counts[0]} max={frame_counts[-1]} "
-              f"mean={sum(frame_counts)/n:.0f}")
-        print("  " + "  ".join(f"p{p}={pct(p)}" for p in (5, 25, 50, 75, 90, 95, 99)))
-
-        below_read = sum(1 for f in frame_counts if f < config.num_frames)
+        below_read = sum(1 for f in kept_frames if f < config.num_frames)
         print(f"  shorter than num_frames ({config.num_frames}): {below_read} "
-              f"({100*below_read/n:.1f}%) - these are stretched, not padded")
+              f"({100*below_read/info['count']:.1f}%) - resampled over their real "
+              f"length, not zero-padded")
         if compressed:
-            below_compressed = sum(1 for f in frame_counts if f < compressed)
+            below_compressed = sum(1 for f in kept_frames if f < compressed)
             print(f"  shorter than compressed_frames ({compressed}): "
-                  f"{below_compressed} ({100*below_compressed/n:.1f}%) - upsampled in time")
+                  f"{below_compressed} ({100*below_compressed/info['count']:.1f}%) "
+                  f"- stretched in time")
 
-        # Fewer frames than target tokens means less than one frame per token,
-        # which is a data quality question rather than a CTC error
-        starved = [r for r, f in frames_by_recording.items()
-                   if f < target_lengths.get(r, 0)]
+        # Fewer frames than target tokens is a data quality question, not a CTC error
+        starved = [r for r in valid if frames_by_recording[r] < target_lengths[r]]
         if starved:
             print(f"  WARNING: {len(starved)} videos have fewer frames than target "
                   f"tokens; check these recordings for truncation")
+            for recording in starved[:5]:
+                print(f"    {recording}: {frames_by_recording[recording]} frames, "
+                      f"{target_lengths[recording]} tokens")
 
     out_path = args.out or config.valid_samples_path
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
@@ -222,13 +188,12 @@ def main():
         'token_limit': token_limit,
         'num_frames': config.num_frames,
         'frame_size': list(config.frame_size),
-        'quick': args.quick,
         'total_rows': len(df),
+        'video_stats_path': stats_path,
         'valid': sorted(valid),
         'rejected': rejected,
-        # Kept so the frame distribution can be analysed without decoding again
-        'frames': frames_by_recording,
-        'target_lengths': {r: target_lengths[r] for r in valid if r in target_lengths},
+        'frames': {r: frames_by_recording[r] for r in valid},
+        'target_lengths': target_lengths,
     }
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
