@@ -1,4 +1,5 @@
 """Shared startup reporting for the training entry points."""
+import os
 
 
 def print_run_summary(config, title):
@@ -39,3 +40,14 @@ def print_run_summary(config, title):
     if train_cap or val_cap:
         print(f"Batch caps: train={train_cap or 'full'}, val={val_cap or 'full'} "
               f"(partial epochs - not a full training pass)")
+
+    # Stated plainly because checkpoints are easy to lose track of when the
+    # output directory is overridden per environment
+    out_dir = getattr(config, 'model_output_dir', None)
+    if out_dir:
+        print(f"Output dir: {out_dir}")
+        print(f"  checkpoints: {os.path.join(out_dir, 'checkpoints')}")
+        print(f"  log: {os.path.join(out_dir, 'training.log')}")
+
+    resume = getattr(config, 'resume_from', None)
+    print(f"Resume: {resume if resume else ('auto' if getattr(config, 'auto_resume', True) else 'disabled')}")

@@ -6,8 +6,8 @@ class BaseConfig:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Paths
-    csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"
-    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
+    csv_path = "/bornil-bdsl-video-dataset/video_data.csv"
+    chunk_base_path = "/bornil-bdsl-video-dataset"
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

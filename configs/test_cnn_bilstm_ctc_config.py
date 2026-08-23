@@ -19,6 +19,14 @@ class TestCNNBiLSTMConfig:
     num_epochs = 3
     metrics_interval = 1  # short run, so report metrics every epoch
 
+    # Paths
+    csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"
+    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
+
+    # Written outside the repo so re-cloning does not delete the checkpoints.
+    # Kaggle still discards this when a session ends unless the version is saved.
+    output_dir = "/kaggle/working/outputs"
+
     max_train_batches = 200
     max_val_batches = 50
 

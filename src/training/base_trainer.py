@@ -12,13 +12,17 @@ class BaseTrainer(ABC):
     def setup_logging(self):
         """Setup logging configuration"""
         log_path = os.path.join(self.config.model_output_dir, 'training.log')
+        # force=True because importing src.data_loader already called
+        # basicConfig, which would otherwise make this a silent no-op and leave
+        # training.log empty
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_path),
                 logging.StreamHandler()
-            ]
+            ],
+            force=True,
         )
         self.logger = logging.getLogger(__name__)
 

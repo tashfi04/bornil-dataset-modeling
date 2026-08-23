@@ -17,6 +17,14 @@ class TestViViTCTCConfig:
     warmup_epochs = 2
     metrics_interval = 1  # short run, so report metrics every epoch
 
+    # Paths
+    csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"
+    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
+
+    # Written outside the repo so re-cloning does not delete the checkpoints.
+    # Kaggle still discards this when a session ends unless the version is saved.
+    output_dir = "/kaggle/working/outputs"
+
     # Decoding video live costs ~2 s per clip, so a full epoch is ~2 h. These caps
     # keep the test run to minutes; set both to None for a real pass.
     max_train_batches = 200

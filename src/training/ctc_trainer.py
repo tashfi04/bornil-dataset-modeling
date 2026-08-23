@@ -168,10 +168,12 @@ class CTCTrainer(BaseTrainer):
                 if self.step_scheduler_per_batch and self.scheduler is not None:
                     self.scheduler.step()
 
-                # Update progress bar
+                # accumulated_loss is the sum over this window, so divide by the
+                # batches in it to stay comparable with the validation loss
+                window_batches = max(1, self.accumulation_count)
                 current_lr = self.optimizer.param_groups[0]['lr']
                 pbar.set_postfix({
-                    'Loss': f'{accumulated_loss:.4f}',
+                    'Loss': f'{accumulated_loss / window_batches:.4f}',
                     'LR': f'{current_lr:.2e}',
                     'Accum': f'{self.accumulation_count}/{self.gradient_accumulation_steps}'
                 })
@@ -505,21 +507,17 @@ class CTCTrainer(BaseTrainer):
             return bpe_ids_to_text([int(i) for i in ids], self.tokenizer)
         return ''.join(self.vocab['id_to_char'][str(int(idx))] for idx in ids)
 
-    def calculate_wer_cer(self, epoch):
-        """Calculate comprehensive evaluation metrics"""
-        interval = max(1, getattr(self.config, 'metrics_interval', 5))
-        if epoch % interval != 0:
-            return None
-
+    def decode_loader(self, loader, max_batches=None):
+        """Greedy-decode a whole loader. Returns (targets, predictions) as text."""
         self.model.eval()
         all_predictions = []
         all_targets = []
 
         with torch.no_grad():
-            for batch_idx, batch in enumerate(self.val_loader):
-                if batch_idx >= self.val_batches:
+            for batch_idx, batch in enumerate(loader):
+                if max_batches is not None and batch_idx >= max_batches:
                     break
-                # Move input to LSTM device immediately
+
                 batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                         for k, v in batch.items()}
 
@@ -530,7 +528,6 @@ class CTCTrainer(BaseTrainer):
                 with self._autocast():
                     outputs = self.model(videos, video_lengths)   # (B, T, C)
 
-                # Greedy decoding
                 _, max_indices = torch.max(outputs, dim=2)
                 max_indices = max_indices.cpu().numpy()  # (B, T)
 
@@ -538,8 +535,7 @@ class CTCTrainer(BaseTrainer):
                 input_lengths_np = self.get_input_lengths(outputs, video_lengths).cpu().numpy()
 
                 for i in range(len(max_indices)):
-                    seq_len = input_lengths_np[i]
-                    sequence = max_indices[i][:seq_len]  # Only take real frames
+                    sequence = max_indices[i][:input_lengths_np[i]]
 
                     # Remove blanks and collapse repeats
                     decoded = []
@@ -549,12 +545,31 @@ class CTCTrainer(BaseTrainer):
                             decoded.append(idx)
                         previous = idx
 
-                    # Convert to text using whichever tokenization is active
-                    predicted_text = self._ids_to_text(decoded)
-                    all_predictions.append(predicted_text)
+                    all_predictions.append(self._ids_to_text(decoded))
                     all_targets.append(text_labels[i])
 
-        # Use utils metrics function
+        return all_targets, all_predictions
+
+    def calculate_wer_cer(self, epoch):
+        """Calculate comprehensive evaluation metrics"""
+        interval = max(1, getattr(self.config, 'metrics_interval', 5))
+        if epoch % interval != 0:
+            return None
+
+        all_targets, all_predictions = self.decode_loader(
+            self.val_loader, max_batches=self.val_batches
+        )
         metrics = calculate_all_metrics(all_targets, all_predictions)
+
+        # A few decoded examples, because falling loss alone cannot distinguish
+        # real learning from CTC collapsing to all-blank (which decodes to "")
+        empty = sum(1 for p in all_predictions if not p.strip())
+        self.logger.info(
+            f"Decoded {len(all_predictions)} val samples, {empty} of them empty "
+            f"({100 * empty / max(1, len(all_predictions)):.0f}%)"
+        )
+        for target, prediction in list(zip(all_targets, all_predictions))[:3]:
+            self.logger.info(f"  target: {target[:80]}")
+            self.logger.info(f"  pred  : {prediction[:80]}")
 
         return metrics
