@@ -175,6 +175,13 @@ class ViViT_CTC_HF(nn.Module):
             for param in self.vivit.parameters():
                 param.requires_grad = False
 
+            # The Kinetics checkpoint encodes far more about *where* than *when*
+            # (measured: temporal-adjacent positions ~700x closer than spatial
+            # ones). Freezing them leaves the CTC head with almost no sense of
+            # ordering, so they can be trained while the rest stays frozen.
+            if getattr(config, 'trainable_position_embeddings', False):
+                self.vivit.embeddings.position_embeddings.requires_grad = True
+
         hidden_size = self.vivit.config.hidden_size
         self.classifier = nn.Linear(hidden_size, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)

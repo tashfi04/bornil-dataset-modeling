@@ -253,12 +253,53 @@ class CTCTrainer(BaseTrainer):
         if self.use_amp:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
 
-        torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'last_checkpoint.pth'))
+        written = []
+        last_path = os.path.join(self.checkpoint_dir, 'last_checkpoint.pth')
+        torch.save(checkpoint, last_path)
+        written.append(last_path)
+
         if is_best:
-            torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'best_model.pth'))
+            best_path = os.path.join(self.checkpoint_dir, 'best_model.pth')
+            torch.save(checkpoint, best_path)
+            written.append(best_path)
+
         if getattr(self.config, 'keep_epoch_checkpoints', False):
-            torch.save(checkpoint, os.path.join(
-                self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth'))
+            epoch_path = os.path.join(
+                self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+            torch.save(checkpoint, epoch_path)
+            written.append(epoch_path)
+
+        # Confirm what actually landed on disk. If these lines report a file and
+        # it is missing later, something outside training removed it.
+        for path in written:
+            if os.path.exists(path):
+                self.logger.info(
+                    f"Saved {path} ({os.path.getsize(path) / 1024 ** 2:.0f} MB)"
+                )
+            else:
+                self.logger.error(f"torch.save reported success but {path} is missing")
+
+    def _report_checkpoints(self):
+        """List what survived in the checkpoint directory when training ends."""
+        if not os.path.isdir(self.checkpoint_dir):
+            self.logger.error(
+                f"Checkpoint directory {self.checkpoint_dir} does not exist at the "
+                f"end of training. Something removed it."
+            )
+            return
+
+        entries = sorted(os.listdir(self.checkpoint_dir))
+        if not entries:
+            self.logger.error(
+                f"Checkpoint directory {self.checkpoint_dir} is empty at the end of "
+                f"training, although checkpoints were written to it."
+            )
+            return
+
+        self.logger.info(f"Checkpoints in {self.checkpoint_dir}:")
+        for name in entries:
+            size = os.path.getsize(os.path.join(self.checkpoint_dir, name))
+            self.logger.info(f"  {name} ({size / 1024 ** 2:.0f} MB)")
 
     def _resume_checkpoint_path(self):
         """An explicit `resume_from` wins; otherwise pick up last_checkpoint.pth."""
@@ -399,6 +440,8 @@ class CTCTrainer(BaseTrainer):
             if patience_counter >= self.config.early_stopping_patience:
                 self.logger.info("Early stopping triggered!")
                 break
+
+        self._report_checkpoints()
 
     def _autocast(self):
         """Mixed-precision context for the forward pass; a no-op when disabled."""
