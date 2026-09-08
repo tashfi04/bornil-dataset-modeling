@@ -46,8 +46,10 @@ class BaseConfig:
     resume_from = None
 
     # Every checkpoint is a few hundred MB, so only the latest and the best are
-    # kept by default. Enable to also keep one file per epoch.
+    # kept by default. Enable to also keep one file per epoch, and cap how many
+    # of those are retained.
     keep_epoch_checkpoints = False
+    max_epoch_checkpoints = 3
 
     # Cap batches per epoch. None means a full pass; a small number exercises the
     # whole training loop quickly, which matters while video is decoded live.

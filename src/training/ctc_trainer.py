@@ -259,8 +259,18 @@ class CTCTrainer(BaseTrainer):
         written.append(last_path)
 
         if is_best:
+            # The best checkpoint is for evaluation and sharing, not for resuming,
+            # so the optimizer state is dropped.
             best_path = os.path.join(self.checkpoint_dir, 'best_model.pth')
-            torch.save(checkpoint, best_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': checkpoint['model_state_dict'],
+                'val_loss': val_loss,
+                'model_type': checkpoint['model_type'],
+                'num_classes': checkpoint['num_classes'],
+                'training_state': checkpoint['training_state'],
+                'weights_only': True,
+            }, best_path)
             written.append(best_path)
 
         if getattr(self.config, 'keep_epoch_checkpoints', False):
@@ -268,6 +278,7 @@ class CTCTrainer(BaseTrainer):
                 self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
             torch.save(checkpoint, epoch_path)
             written.append(epoch_path)
+            self._prune_epoch_checkpoints()
 
         # Confirm what actually landed on disk. If these lines report a file and
         # it is missing later, something outside training removed it.
@@ -278,6 +289,24 @@ class CTCTrainer(BaseTrainer):
                 )
             else:
                 self.logger.error(f"torch.save reported success but {path} is missing")
+
+    def _prune_epoch_checkpoints(self):
+        """Keep only the most recent per-epoch checkpoints, if a limit is set."""
+        limit = getattr(self.config, 'max_epoch_checkpoints', None)
+        if not limit:
+            return
+
+        epoch_files = sorted(
+            name for name in os.listdir(self.checkpoint_dir)
+            if name.startswith('checkpoint_epoch_') and name.endswith('.pth')
+        )
+        for name in epoch_files[:-limit]:
+            path = os.path.join(self.checkpoint_dir, name)
+            try:
+                os.remove(path)
+                self.logger.info(f"Removed old checkpoint {name}")
+            except OSError as exc:
+                self.logger.warning(f"Could not remove {path}: {exc}")
 
     def _report_checkpoints(self):
         """List what survived in the checkpoint directory when training ends."""
@@ -344,7 +373,14 @@ class CTCTrainer(BaseTrainer):
 
         base_model = getattr(self.model, 'module', self.model)
         base_model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        else:
+            self.logger.warning(
+                f"{path} carries weights only, so the optimizer starts fresh. "
+                f"Resume from last_checkpoint.pth to continue exactly."
+            )
 
         if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
             try:
