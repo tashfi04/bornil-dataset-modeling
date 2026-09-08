@@ -10,7 +10,7 @@ class TestViViTCTCConfig:
     freeze_backbone = True
     # Train the position embeddings even while the backbone is frozen. Adds ~2.5M
     # trainable parameters and gives the CTC head a usable notion of time.
-    trainable_position_embeddings = False
+    trainable_position_embeddings = True
 
     # Training
     learning_rate = 5e-5
