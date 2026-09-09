@@ -53,8 +53,15 @@ class BaseConfig:
 
     # Cap batches per epoch. None means a full pass; a small number exercises the
     # whole training loop quickly, which matters while video is decoded live.
+    # Note these reshuffle every epoch, so they subsample rather than fix the data.
     max_train_batches = None
     max_val_batches = None
+
+    # Restrict a split to a fixed, seeded subset. Unlike the caps above the same
+    # samples come back every epoch, which is what an overfit check needs.
+    train_subset_size = None
+    val_subset_size = None
+    test_subset_size = None
 
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")

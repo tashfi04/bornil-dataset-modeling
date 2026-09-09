@@ -41,6 +41,12 @@ def print_run_summary(config, title):
         print(f"Batch caps: train={train_cap or 'full'}, val={val_cap or 'full'} "
               f"(partial epochs - not a full training pass)")
 
+    subsets = {name: getattr(config, f'{name}_subset_size', None)
+               for name in ('train', 'val', 'test')}
+    if any(subsets.values()):
+        shown = ', '.join(f"{k}={v or 'full'}" for k, v in subsets.items())
+        print(f"Fixed subsets: {shown} (same samples every epoch)")
+
     # Stated plainly because checkpoints are easy to lose track of when the
     # output directory is overridden per environment
     out_dir = getattr(config, 'model_output_dir', None)

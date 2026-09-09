@@ -100,10 +100,30 @@ class BdSLDataset(Dataset):
             logger.info(f"Reading frames from cache: {self.cache_root}")
 
         self.valid_indices = self._build_valid_indices()
+        self._apply_subset()
 
         logger.info(f"Initialized {mode} dataset with {len(self.valid_indices)} valid samples (out of {len(self.df)})")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
         logger.info(f"Tokenization type: {self.tokenization_type}")
+
+    def _apply_subset(self):
+        """Restrict this split to a fixed random subset, if one is configured.
+
+        The selection is seeded, so the same samples come back every epoch and
+        across runs. That is what makes an overfit check meaningful: a batch cap
+        reshuffles, so the model never sees the same data twice.
+        """
+        size = getattr(self.config, f'{self.mode}_subset_size', None)
+        if not size or size >= len(self.valid_indices):
+            return
+
+        rng = np.random.RandomState(getattr(self.config, 'random_seed', 42))
+        chosen = rng.choice(len(self.valid_indices), size=size, replace=False)
+        self.valid_indices = [self.valid_indices[i] for i in sorted(chosen)]
+        logger.warning(
+            f"{self.mode}: restricted to a fixed subset of {size} samples "
+            f"(set {self.mode}_subset_size to None for the full split)"
+        )
 
     def _load_approved_samples(self):
         """Read the valid-sample list written by scripts/validate_dataset.py."""
