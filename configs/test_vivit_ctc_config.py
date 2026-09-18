@@ -29,7 +29,8 @@ class TestViViTCTCConfig:
     output_dir = "/kaggle/working/outputs"
 
     # Decoding video live costs ~2 s per clip, so a full epoch is ~2 h. These caps
-    # keep the test run to minutes; set both to None for a real pass.
+    # keep the test run to minutes. They reshuffle every epoch, so they subsample
+    # the data rather than fixing it.
     max_train_batches = 200
     max_val_batches = 50
 

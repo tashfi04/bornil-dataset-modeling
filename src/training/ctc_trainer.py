@@ -72,7 +72,7 @@ class CTCTrainer(BaseTrainer):
             self.logger.warning(
                 f"Batch caps active: {self.train_batches}/{len(self.train_loader)} train, "
                 f"{self.val_batches}/{len(self.val_loader)} val batches per epoch. "
-                f"Set max_train_batches/max_val_batches to None for a full pass."
+                f"Remove max_train_batches/max_val_batches from the config for a full pass."
             )
 
         self.logger.info(f"Tokenization: {self.tokenization_type}")

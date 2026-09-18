@@ -122,7 +122,7 @@ class BdSLDataset(Dataset):
         self.valid_indices = [self.valid_indices[i] for i in sorted(chosen)]
         logger.warning(
             f"{self.mode}: restricted to a fixed subset of {size} samples "
-            f"(set {self.mode}_subset_size to None for the full split)"
+            f"(remove {self.mode}_subset_size from the config for the full split)"
         )
 
     def _load_approved_samples(self):
