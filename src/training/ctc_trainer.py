@@ -171,7 +171,8 @@ class CTCTrainer(BaseTrainer):
                 # accumulated_loss is the sum over this window, so divide by the
                 # batches in it to stay comparable with the validation loss
                 window_batches = max(1, self.accumulation_count)
-                current_lr = self.optimizer.param_groups[0]['lr']
+                # The last group is the head, which carries the main learning rate
+                current_lr = self.optimizer.param_groups[-1]['lr']
                 pbar.set_postfix({
                     'Loss': f'{accumulated_loss / window_batches:.4f}',
                     'LR': f'{current_lr:.2e}',
@@ -433,14 +434,18 @@ class CTCTrainer(BaseTrainer):
             # Per-step schedulers already advanced inside train_epoch
             if not self.step_scheduler_per_batch and self.scheduler is not None:
                 self.scheduler.step(val_loss)
-            current_lr = self.optimizer.param_groups[0]['lr']
-            self.logger.info(f"Learning Rate: {current_lr:.2e}")
+            groups = self.optimizer.param_groups
+            if len(groups) == 1:
+                self.logger.info(f"Learning Rate: {groups[0]['lr']:.2e}")
+            else:
+                self.logger.info("Learning Rate: " + ", ".join(
+                    f"{g.get('name', i)}={g['lr']:.2e}" for i, g in enumerate(groups)))
 
             # Calculate metrics (less frequently to save time)
             metrics = self.calculate_wer_cer(epoch)
             if metrics is not None:
                 self.logger.info(
-                    f"Metrics - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
+                    f"Metrics ({self._metrics_split()}) - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
                     f"Exact Match: {metrics['exact_match_accuracy']:.4f}, "
                     f"Token Accuracy: {metrics['token_accuracy']:.4f}"
                 )
@@ -568,10 +573,16 @@ class CTCTrainer(BaseTrainer):
         backbone_ids = {id(p) for p in backbone.parameters()}
         head_params = [p for p in base_model.parameters() if id(p) not in backbone_ids]
 
-        self.optimizer = Adam(
-            [{'params': list(backbone.parameters()), 'lr': self.config.learning_rate / 10},
-             {'params': head_params}],
-            lr=self.config.learning_rate
+        # Keep the optimizer type and settings the run started with; ViViT uses
+        # AdamW with weight decay, CNN-BiLSTM plain Adam
+        kept = {k: v for k, v in self.optimizer.defaults.items()
+                if k in ('betas', 'eps', 'weight_decay')}
+        self.optimizer = type(self.optimizer)(
+            [{'params': list(backbone.parameters()), 'lr': self.config.learning_rate / 10,
+              'name': 'backbone'},
+             {'params': head_params, 'name': 'head'}],
+            lr=self.config.learning_rate,
+            **kept,
         )
         # A per-step schedule does not carry over to the rebuilt optimizer
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
@@ -629,22 +640,29 @@ class CTCTrainer(BaseTrainer):
 
         return all_targets, all_predictions
 
+    def _metrics_split(self):
+        """Which split WER/CER are computed on. An overfit check sets 'train'."""
+        return getattr(self.config, 'metrics_split', 'val')
+
     def calculate_wer_cer(self, epoch):
         """Calculate comprehensive evaluation metrics"""
         interval = max(1, getattr(self.config, 'metrics_interval', 5))
         if epoch % interval != 0:
             return None
 
-        all_targets, all_predictions = self.decode_loader(
-            self.val_loader, max_batches=self.val_batches
-        )
+        split = self._metrics_split()
+        if split == 'train':
+            loader, cap = self.train_loader, self.train_batches
+        else:
+            loader, cap = self.val_loader, self.val_batches
+        all_targets, all_predictions = self.decode_loader(loader, max_batches=cap)
         metrics = calculate_all_metrics(all_targets, all_predictions)
 
         # A few decoded examples, because falling loss alone cannot distinguish
         # real learning from CTC collapsing to all-blank (which decodes to "")
         empty = sum(1 for p in all_predictions if not p.strip())
         self.logger.info(
-            f"Decoded {len(all_predictions)} val samples, {empty} of them empty "
+            f"Decoded {len(all_predictions)} {split} samples, {empty} of them empty "
             f"({100 * empty / max(1, len(all_predictions)):.0f}%)"
         )
         for target, prediction in list(zip(all_targets, all_predictions))[:3]:

@@ -25,7 +25,7 @@ from src.utils.metrics import calculate_all_metrics
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained checkpoint")
     parser.add_argument('--model', choices=['vivit', 'cnn_bilstm'], default='vivit')
-    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+    parser.add_argument('--config', choices=['prod', 'test', 'overfit'], default='prod',
                         help="Which config variant the checkpoint was trained with")
     parser.add_argument('--split', choices=['test', 'val', 'train'], default='test')
     parser.add_argument('--checkpoint', default=None,
@@ -40,6 +40,8 @@ def main():
     if args.model == 'vivit':
         if args.config == 'test':
             from configs.test_vivit_ctc_config import config
+        elif args.config == 'overfit':
+            from configs.overfit_vivit_ctc_config import config
         else:
             from configs.vivit_ctc_config import config
         from src.training.vivit_trainer import ViViTTrainer as Trainer

@@ -16,19 +16,27 @@ class OverfitViViTCTCConfig:
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
 
     # Model parameters
-    freeze_backbone = True
-    trainable_position_embeddings = True
+    # Everything trains from the first step. With a frozen backbone the trainer
+    # unfreezes it once validation loss plateaus, then swaps to a scheduler that
+    # halves the learning rate whenever validation loss stalls. Here validation
+    # loss is meant to rise, so both would fire and starve the memorisation.
+    freeze_backbone = False
 
     # Training
     # No accumulation, so every batch is an optimizer step: 100 per epoch
-    # instead of 25. The learning rate is higher than a real run because here
-    # fast memorisation is the goal.
-    learning_rate = 2e-4
+    # instead of 25. The rate is higher than a real run because fast
+    # memorisation is the goal, but kept moderate since the whole pretrained
+    # transformer is updating.
+    learning_rate = 1e-4
     batch_size = 2
     gradient_accumulation_steps = 1  # 1 = no accumulation
     num_epochs = 50
     warmup_epochs = 5
     metrics_interval = 5
+
+    # Decode the clips being memorised rather than the held-out ones, so each
+    # metrics pass shows directly whether the model can reproduce them
+    metrics_split = 'train'
 
     # Validation loss is supposed to get worse as the model memorises, so early
     # stopping would cut the run short at exactly the wrong moment.
