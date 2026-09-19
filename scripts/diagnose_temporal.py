@@ -57,6 +57,54 @@ def forward_stages(model, videos, lengths):
     return pixels, pooled, log_probs
 
 
+def layer_profile(model, batches, device, use_amp, proj_dim=64):
+    """Temporal share at every ViViT layer, pooled and per patch location.
+
+    'pooled' averages the spatial patches, as the model does. 'local' keeps each
+    patch location separate, so it shows whether motion survives in individual
+    patches even when the average hides it. Features are randomly projected to
+    a smaller width first, which preserves variance structure closely enough
+    for this purpose and keeps memory small.
+    """
+    generator = torch.Generator().manual_seed(0)
+    projection = None
+    pooled_layers, local_layers = None, None
+
+    with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
+        for videos, lengths in batches:
+            compressed = model.compressor(videos.to(device), lengths.to(device))
+            outputs = model.vivit(compressed.permute(0, 2, 1, 3, 4),
+                                  output_hidden_states=True)
+            states = outputs.hidden_states
+            if pooled_layers is None:
+                pooled_layers = [[] for _ in states]
+                local_layers = [[] for _ in states]
+
+            for index, hidden in enumerate(states):
+                batch = hidden.size(0)
+                patches = hidden[:, 1:].float().reshape(
+                    batch, model.num_temporal, model.num_spatial, -1)
+                if projection is None:
+                    projection = torch.randn(patches.size(-1), proj_dim,
+                                             generator=generator) / proj_dim ** 0.5
+                    projection = projection.to(patches.device)
+                pooled_layers[index].append(patches.mean(dim=2).cpu())
+                local = (patches @ projection).permute(0, 2, 1, 3)
+                local_layers[index].append(
+                    local.reshape(batch * model.num_spatial, model.num_temporal, proj_dim).cpu())
+
+    return [(temporal_fraction(torch.cat(pooled)), temporal_fraction(torch.cat(local)))
+            for pooled, local in zip(pooled_layers, local_layers)]
+
+
+def report_layers(label, profile):
+    print(f"\n=== {label}: temporal share by ViViT layer ===")
+    print(f"  {'layer':>12}  {'pooled':>7}  {'per location':>12}")
+    for index, (pooled, local) in enumerate(profile):
+        name = 'embeddings' if index == 0 else f'layer {index}'
+        print(f"  {name:>12}  {pooled:7.3f}  {local:12.3f}")
+
+
 def measure(model, batches, device, use_amp):
     pixels, pooled, log_probs = [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
@@ -143,11 +191,14 @@ def main():
 
     before = measure(model, batches, device, use_amp)
     report("Pretrained ViViT (CTC head untrained)", before)
+    report_layers("Pretrained ViViT", layer_profile(model, batches, device, use_amp))
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
+    label = f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}"
     after = measure(model, batches, device, use_amp)
-    report(f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}", after)
+    report(label, after)
+    report_layers(label, layer_profile(model, batches, device, use_amp))
 
     print("\n=== Reading it ===")
     print("Compare the three 'change over time' numbers after training. Where the")
@@ -159,6 +210,12 @@ def main():
     print("    mean-pooling is flattening time")
     print("  - high in the pooled features but blank dominating the head: the")
     print("    features vary, and the problem is the CTC head or its time budget")
+    print()
+    print("In the per-layer table:")
+    print("  - 'per location' stays high while 'pooled' is low: motion survives in")
+    print("    individual patches and averaging them hides it")
+    print("  - both fall together with depth: the attention layers themselves erase")
+    print("    time, and earlier layers carry more of it")
 
 
 if __name__ == "__main__":
