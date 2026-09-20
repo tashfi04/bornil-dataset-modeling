@@ -42,19 +42,18 @@ def adjacent_cosine(seq):
 
 
 def forward_stages(model, videos, lengths):
-    """Run the model, returning the input to ViViT, pooled features and log-probs."""
+    """Run the model's own feature path, returning each stage for measurement."""
     compressed = model.compressor(videos, lengths)                  # (B, 3, Tc, H, W)
-    hidden = model.vivit(compressed.permute(0, 2, 1, 3, 4)).last_hidden_state
-    batch = hidden.size(0)
-    patches = hidden[:, 1:].reshape(batch, model.num_temporal, model.num_spatial, -1)
-    pooled = patches.mean(dim=2)                                     # (B, Tt, D)
-    log_probs = F.log_softmax(model.classifier(pooled).float(), dim=-1)
+    batch = compressed.size(0)
+    pooled = model.pool_features(videos, lengths)                   # (B, Tt, D)
+    head_input = model.feature_norm(pooled)
+    log_probs = F.log_softmax(model.classifier(head_input).float(), dim=-1)
 
     # Pixels are downsampled spatially; the aim is to measure change over time,
     # which does not need full resolution
     small = F.adaptive_avg_pool3d(compressed.float(), (compressed.size(2), 20, 20))
     pixels = small.permute(0, 2, 1, 3, 4).reshape(batch, compressed.size(2), -1)
-    return pixels, pooled, log_probs
+    return pixels, pooled, head_input, log_probs
 
 
 def layer_profile(model, batches, device, use_amp, proj_dim=64):
@@ -89,7 +88,10 @@ def layer_profile(model, batches, device, use_amp, proj_dim=64):
                                              generator=generator) / proj_dim ** 0.5
                     projection = projection.to(patches.device)
                 pooled_layers[index].append(patches.mean(dim=2).cpu())
-                local = (patches @ projection).permute(0, 2, 1, 3)
+                # Outside autocast: deep layers carry large activations, and a
+                # half-precision matmul overflows to inf
+                with torch.amp.autocast('cuda', enabled=False):
+                    local = (patches @ projection).permute(0, 2, 1, 3)
                 local_layers[index].append(
                     local.reshape(batch * model.num_spatial, model.num_temporal, proj_dim).cpu())
 
@@ -106,14 +108,16 @@ def report_layers(label, profile):
 
 
 def measure(model, batches, device, use_amp):
-    pixels, pooled, log_probs = [], [], []
+    pixels, pooled, head_input, log_probs = [], [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
         for videos, lengths in batches:
-            p, q, r = forward_stages(model, videos.to(device), lengths.to(device))
+            p, q, h, r = forward_stages(model, videos.to(device), lengths.to(device))
             pixels.append(p.float().cpu())
             pooled.append(q.float().cpu())
+            head_input.append(h.float().cpu())
             log_probs.append(r.float().cpu())
-    pixels, pooled, log_probs = torch.cat(pixels), torch.cat(pooled), torch.cat(log_probs)
+    pixels, pooled = torch.cat(pixels), torch.cat(pooled)
+    head_input, log_probs = torch.cat(head_input), torch.cat(log_probs)
 
     argmax = log_probs.argmax(dim=-1)
     probs = log_probs.exp()
@@ -123,6 +127,7 @@ def measure(model, batches, device, use_amp):
         'pixel_adj': adjacent_cosine(pixels),
         'pooled_time': temporal_fraction(pooled),
         'pooled_adj': adjacent_cosine(pooled),
+        'head_time': temporal_fraction(head_input),
         'logit_time': temporal_fraction(log_probs),
         'blank_argmax': (argmax == 0).float().mean().item(),
         'blank_prob': probs[..., 0].mean().item(),
@@ -138,6 +143,7 @@ def report(label, m):
     print("  share of variance from change over time (0 = constant in time)")
     print(f"    compressor output (input to ViViT): {m['pixel_time']:.3f}")
     print(f"    pooled ViViT features:              {m['pooled_time']:.3f}")
+    print(f"    CTC head input (after its norm):    {m['head_time']:.3f}")
     print(f"    CTC log-probs:                      {m['logit_time']:.3f}")
     print("  cosine between consecutive steps (1 = no change)")
     print(f"    compressor output:                  {m['pixel_adj']:.3f}")
@@ -177,9 +183,6 @@ def main():
 
     checkpoint_path = args.checkpoint or os.path.join(
         trainer.checkpoint_dir, 'last_checkpoint.pth')
-    if not os.path.exists(checkpoint_path):
-        print(f"No checkpoint at {checkpoint_path}; pass --checkpoint")
-        sys.exit(1)
 
     # The same clips are measured before and after loading the checkpoint
     loader = trainer.train_loader if args.split == 'train' else trainer.val_loader
@@ -193,12 +196,21 @@ def main():
     report("Pretrained ViViT (CTC head untrained)", before)
     report_layers("Pretrained ViViT", layer_profile(model, batches, device, use_amp))
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    label = f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}"
-    after = measure(model, batches, device, use_amp)
-    report(label, after)
-    report_layers(label, layer_profile(model, batches, device, use_amp))
+    if not os.path.exists(checkpoint_path):
+        print(f"\nNo checkpoint at {checkpoint_path}; showing the pretrained model only.")
+    else:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        try:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        except RuntimeError as exc:
+            # e.g. a checkpoint saved before the encoder was truncated
+            print(f"\nSkipping {checkpoint_path}: it does not match this model's "
+                  f"architecture ({str(exc).splitlines()[0]})")
+        else:
+            label = f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}"
+            after = measure(model, batches, device, use_amp)
+            report(label, after)
+            report_layers(label, layer_profile(model, batches, device, use_amp))
 
     print("\n=== Reading it ===")
     print("Compare the three 'change over time' numbers after training. Where the")
