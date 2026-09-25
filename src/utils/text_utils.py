@@ -54,7 +54,7 @@ def normalize_text(text: str) -> str:
     # text = ''.join(allowed_pattern.findall(text))
 
     # Collapse runs of whitespace into a single space
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
 
     return text
 
@@ -129,8 +129,13 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
 
-    # Use a simple whitespace pre‑tokenizer to keep unicode characters intact
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    # Metaspace encodes each space as a marker on the following token, so the
+    # token sequence records where words begin. A whitespace pre-tokenizer
+    # discards that, and word boundaries are then unrecoverable from a decoded
+    # CTC output: a memorised sentence still comes back split into sub-words.
+    # The matching decoder turns the markers back into spaces.
+    tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+    tokenizer.decoder = decoders.Metaspace()
 
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
@@ -140,18 +145,33 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
 
     tokenizer.train([temp_file], trainer)
 
-    # Save tokenizer
-    tokenizer.save(output_path)
-
     # Clean up temp file
     os.remove(temp_file)
+
+    # Decoding is what WER and CER are computed on, so a tokenizer that cannot
+    # round-trip its own training text would make every reported score wrong
+    failures = [t for t in texts[:2000] if tokenizer.decode(tokenizer.encode(t).ids) != t]
+    if failures:
+        raise RuntimeError(
+            f"BPE tokenizer does not round-trip {len(failures)} of 2000 sentences; "
+            f"first mismatch: {failures[0]!r} -> "
+            f"{tokenizer.decode(tokenizer.encode(failures[0]).ids)!r}")
+
+    # Save tokenizer
+    tokenizer.save(output_path)
 
     print(f"BPE tokenizer saved to {output_path} with vocab size {tokenizer.get_vocab_size()}")
     return tokenizer
 
 def load_bpe_tokenizer(tokenizer_path):
     """Load saved BPE tokenizer"""
-    return Tokenizer.from_file(tokenizer_path)
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    if tokenizer.decoder is None:
+        raise RuntimeError(
+            f"{tokenizer_path} has no decoder, so decoding joins sub-word tokens "
+            f"with spaces and inflates WER. Retrain it with "
+            f"scripts/train_bpe_tokenizer.py.")
+    return tokenizer
 
 def text_to_bpe_ids(text, tokenizer, blank_id=0):
     """
