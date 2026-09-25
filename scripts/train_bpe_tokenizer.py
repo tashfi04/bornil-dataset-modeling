@@ -6,6 +6,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.text_utils import train_bpe_tokenizer, load_bpe_tokenizer, normalize_text
+from src.utils.ctc_limits import VIVIT_TUBELET_FRAMES
 
 def tokenize(config, vocab_size):
     print("Training BPE Tokenizer")
@@ -60,10 +61,21 @@ def tokenize(config, vocab_size):
     avg_compression = np.mean(char_lengths) / np.mean(token_counts)
     print(f"\nCompression ratio (chars → BPE tokens): {avg_compression:.2f}x")
 
-    # Recommendation for target_frames in ViViT
-    p95_tokens = np.percentile(token_counts, 95)
-    print(f"Set ViViT target_frames = {int(p95_tokens)} (95th percentile of BPE tokens)")
-    print(f"This ensures CTC can handle {int(p95_tokens)} output steps for 95% of sentences")
+    # CTC needs at least one output step per target token, and ViViT emits
+    # compressed_frames // tubelet steps, so the token limit that covers a given
+    # share of sentences fixes how many frames ViViT must be given
+    print(f"\nCTC time budget (ViViT emits compressed_frames // {VIVIT_TUBELET_FRAMES} steps):")
+    for share in (90, 95, 99):
+        tokens = int(np.ceil(np.percentile(token_counts, share)))
+        print(f"  {share}% of sentences: max_bpe_tokens = {tokens}, "
+              f"compressed_frames >= {tokens * VIVIT_TUBELET_FRAMES}")
+
+    limit = config.max_bpe_tokens
+    kept = sum(1 for count in token_counts if count <= limit)
+    print(f"  Configured max_bpe_tokens = {limit} keeps {kept} sentences "
+          f"({100 * kept / total_samples:.2f}%)")
+    print("  Adjacent repeated tokens need extra steps, so the exact count comes "
+          "from scripts/validate_dataset.py")
 
 def main():
     parser = argparse.ArgumentParser(description="Script for BPE tokenization")

@@ -6,6 +6,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from src.utils.metrics import calculate_all_metrics
+from src.utils.text_utils import label_fingerprint, label_fingerprint_problem
 
 from src.training.base_trainer import BaseTrainer
 
@@ -63,6 +64,8 @@ class CTCTrainer(BaseTrainer):
                 self.vocab = json.load(f)
             self.tokenizer = None
             self.num_classes = len(self.vocab['char_to_id'])
+
+        self.label_fingerprint = label_fingerprint(self.config)
 
         # Optional caps for smoke runs, so the whole loop can be exercised without
         # decoding the entire dataset
@@ -247,6 +250,7 @@ class CTCTrainer(BaseTrainer):
             'val_loss': val_loss,
             'model_type': getattr(self.config, 'model_type', None),
             'num_classes': self.num_classes,
+            'label_fingerprint': self.label_fingerprint,
             'training_state': training_state or {},
         }
         if self.scheduler is not None:
@@ -269,6 +273,7 @@ class CTCTrainer(BaseTrainer):
                 'val_loss': val_loss,
                 'model_type': checkpoint['model_type'],
                 'num_classes': checkpoint['num_classes'],
+                'label_fingerprint': checkpoint['label_fingerprint'],
                 'training_state': checkpoint['training_state'],
                 'weights_only': True,
             }, best_path)
@@ -362,6 +367,12 @@ class CTCTrainer(BaseTrainer):
             raise RuntimeError(
                 f"Checkpoint has {saved_classes} output classes but this run has "
                 f"{self.num_classes}; the tokenizer or vocabulary changed."
+            )
+        problem = label_fingerprint_problem(checkpoint, self.label_fingerprint, path)
+        if problem:
+            raise RuntimeError(
+                f"{problem} Resuming would continue training against the wrong "
+                f"targets. Move the old checkpoints aside or set auto_resume=False."
             )
 
         state = dict(checkpoint.get('training_state') or {})

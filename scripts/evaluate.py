@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from src.utils.metrics import calculate_all_metrics
+from src.utils.text_utils import label_fingerprint_problem
 
 
 def main():
@@ -72,6 +73,10 @@ def main():
     if saved_classes is not None and saved_classes != trainer.num_classes:
         print(f"\nCheckpoint has {saved_classes} output classes but this config "
               f"builds {trainer.num_classes}. The tokenizer or vocabulary changed.")
+        sys.exit(1)
+    problem = label_fingerprint_problem(checkpoint, trainer.label_fingerprint, checkpoint_path)
+    if problem:
+        print(f"\n{problem} Its scores would be meaningless.")
         sys.exit(1)
 
     base_model = getattr(trainer.model, 'module', trainer.model)

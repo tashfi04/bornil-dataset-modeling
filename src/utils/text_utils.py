@@ -1,4 +1,4 @@
-import json, re, os, unicodedata
+import json, re, os, hashlib, unicodedata
 import pandas as pd
 from collections import Counter
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, normalizers
@@ -172,6 +172,39 @@ def load_bpe_tokenizer(tokenizer_path):
             f"with spaces and inflates WER. Retrain it with "
             f"scripts/train_bpe_tokenizer.py.")
     return tokenizer
+
+def label_fingerprint(config):
+    """Short hash of what each output id means under this config.
+
+    Stored in checkpoints so they are never used with a tokenizer whose ids
+    stand for different tokens. The class count cannot catch that on its own: a
+    retrained tokenizer of the same size loads without error and decodes
+    nonsense.
+    """
+    if getattr(config, 'tokenization_type', 'character') == 'bpe':
+        with open(config.bpe_tokenizer_path, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        # Vocabulary, merges and word splitting fix the ids; the decoder only
+        # affects how they are joined back into text
+        content = {key: saved.get(key) for key in ('model', 'pre_tokenizer', 'normalizer')}
+    else:
+        with open(config.vocab_path, 'r', encoding='utf-8') as f:
+            content = json.load(f)['char_to_id']
+    blob = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+def label_fingerprint_problem(checkpoint, expected, path):
+    """Explain why a checkpoint does not match the current labels, or return None."""
+    saved = checkpoint.get('label_fingerprint')
+    if saved is None:
+        return (f"{path} has no tokenizer fingerprint, so it cannot be confirmed to "
+                f"use the current tokenizer. It predates the fingerprint and "
+                f"probably the Metaspace tokenizer too.")
+    if saved != expected:
+        return (f"{path} was trained with a different tokenizer or vocabulary "
+                f"(fingerprint {saved}, current {expected}), so its output ids stand "
+                f"for different tokens.")
+    return None
 
 def text_to_bpe_ids(text, tokenizer, blank_id=0):
     """
