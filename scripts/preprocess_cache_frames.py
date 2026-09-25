@@ -12,7 +12,8 @@ Then, if the projection fits your storage budget:
 
     python scripts/preprocess_cache_frames.py --out /kaggle/working/frame_cache
 
-Tune size with --frames / --size / --quality. Defaults follow the ViViT config.
+Tune size with --frames / --size / --quality. Defaults follow the ViViT config;
+add --config test to use the Kaggle test config instead.
 """
 import os
 import sys
@@ -26,7 +27,6 @@ from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from configs.vivit_ctc_config import config
 from src.data_loader import sample_frames
 from src.utils.frame_cache import cache_path, encode_frames
 
@@ -87,12 +87,14 @@ def human(num_bytes):
 
 def main():
     parser = argparse.ArgumentParser(description="Cache pre-sampled video frames")
-    parser.add_argument('--out', default=os.path.join(config.repo_root, 'data', 'frame_cache'),
-                        help="Cache root directory")
-    parser.add_argument('--frames', type=int, default=config.num_frames,
-                        help="Frames to keep per video")
-    parser.add_argument('--size', type=int, default=config.frame_size[0],
-                        help="Square frame size in pixels")
+    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+                        help="ViViT config whose paths and frame settings to use")
+    parser.add_argument('--out', default=None,
+                        help="Cache root directory (defaults to data/frame_cache)")
+    parser.add_argument('--frames', type=int, default=None,
+                        help="Frames to keep per video (defaults to the config's)")
+    parser.add_argument('--size', type=int, default=None,
+                        help="Square frame size in pixels (defaults to the config's)")
     parser.add_argument('--quality', type=int, default=90, help="JPEG quality (1-100)")
     parser.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 1))
     parser.add_argument('--dry-run', action='store_true',
@@ -105,6 +107,14 @@ def main():
                         help="Re-encode clips that are already cached")
     args = parser.parse_args()
 
+    if args.config == 'test':
+        from configs.test_vivit_ctc_config import config
+    else:
+        from configs.vivit_ctc_config import config
+
+    args.out = args.out or os.path.join(config.repo_root, 'data', 'frame_cache')
+    args.frames = args.frames or config.num_frames
+    args.size = args.size or config.frame_size[0]
     size = (args.size, args.size)
     strategy = getattr(config, 'sampling_strategy', 'uniform')
     segments = getattr(config, 'sampling_segments', 3)

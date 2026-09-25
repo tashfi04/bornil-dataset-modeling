@@ -42,6 +42,8 @@ def main():
     parser = argparse.ArgumentParser(description="Validate the dataset before training")
     parser.add_argument('--model', choices=['vivit', 'cnn_bilstm'], default='vivit',
                         help="Which model's config to validate against")
+    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+                        help="test validates against the Kaggle test config")
     parser.add_argument('--out', default=None,
                         help="Where to write the valid-sample list "
                              "(defaults to config.valid_samples_path)")
@@ -51,8 +53,12 @@ def main():
                         help="Only check the first N rows (debugging)")
     args = parser.parse_args()
 
-    if args.model == 'vivit':
+    if args.model == 'vivit' and args.config == 'test':
+        from configs.test_vivit_ctc_config import config
+    elif args.model == 'vivit':
         from configs.vivit_ctc_config import config
+    elif args.config == 'test':
+        from configs.test_cnn_bilstm_ctc_config import config
     else:
         from configs.cnn_bilstm_ctc_config import config
 
@@ -85,7 +91,7 @@ def main():
         df = df.iloc[:args.limit]
 
     print("=== DATASET VALIDATION ===")
-    print(f"Model: {args.model}  tokenization: {tokenization}")
+    print(f"Model: {args.model} ({args.config} config)  tokenization: {tokenization}")
     print(f"CTC time steps: {ctc_steps}   target token limit: {token_limit}")
     print(f"Rows to check: {len(df)}")
     print(f"Using video stats: {stats_path} ({len(stats['frames'])} decoded)")

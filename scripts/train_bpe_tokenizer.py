@@ -5,10 +5,9 @@ import numpy as np
 import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from configs.base_config import config
 from src.utils.text_utils import train_bpe_tokenizer, load_bpe_tokenizer, normalize_text
 
-def tokenize(vocab_size=config.bpe_vocab_size):
+def tokenize(config, vocab_size):
     print("Training BPE Tokenizer")
 
     # Train tokenizer
@@ -68,12 +67,18 @@ def tokenize(vocab_size=config.bpe_vocab_size):
 
 def main():
     parser = argparse.ArgumentParser(description="Script for BPE tokenization")
-    parser.add_argument("--bpe_vocab_size", type=int, default=config.bpe_vocab_size, help="Size of the BPE vocabulary")
+    parser.add_argument("--config", choices=["prod", "test"], default="prod",
+                        help="test reads the dataset from the Kaggle test config's paths")
+    parser.add_argument("--bpe_vocab_size", type=int, default=None,
+                        help="Size of the BPE vocabulary (defaults to the config's)")
     args = parser.parse_args()
 
-    config.bpe_vocab_size = args.bpe_vocab_size
+    if args.config == "test":
+        from configs.test_vivit_ctc_config import config
+    else:
+        from configs.base_config import config
 
-    tokenize(config.bpe_vocab_size)
+    tokenize(config, args.bpe_vocab_size or config.bpe_vocab_size)
 
 if __name__ == "__main__":
     main()

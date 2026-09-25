@@ -4,11 +4,11 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedShuffleSplit
 import sys
+import argparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from configs.base_config import config
 
-def generate_and_save_splits():
+def generate_and_save_splits(config):
     """Generate and save train/val/test splits for reuse"""
 
     # Load the dataset
@@ -84,4 +84,14 @@ def generate_and_save_splits():
     print(f"\nAll {len(original_ids)} samples accounted for in splits")
 
 if __name__ == "__main__":
-    generate_and_save_splits()
+    parser = argparse.ArgumentParser(description="Generate the train/val/test split")
+    parser.add_argument("--config", choices=["prod", "test"], default="prod",
+                        help="test reads the dataset from the Kaggle test config's paths")
+    args = parser.parse_args()
+
+    if args.config == "test":
+        from configs.test_vivit_ctc_config import config
+    else:
+        from configs.base_config import config
+
+    generate_and_save_splits(config)
