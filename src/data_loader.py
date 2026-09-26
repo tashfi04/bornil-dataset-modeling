@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 
-from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids
+from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids, normalize_text
 from src.utils.frame_cache import cache_path, read_cached_frames
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit
 
@@ -228,7 +228,11 @@ class BdSLDataset(Dataset):
 
         return {
             'video': torch.FloatTensor(video),
-            'text': text_label,
+            # The reference for WER/CER. It must be the normalized text the target
+            # ids were built from: NFKC splits য় ড় ঢ় into letter + nukta, so the
+            # raw CSV text differs in code points from any correct prediction
+            # while looking identical.
+            'text': normalize_text(text_label),
             'text_seq': torch.LongTensor(text_seq),
             'video_path': full_video_path,
             'loaded_successfully': True  # Flag for successful loading video
