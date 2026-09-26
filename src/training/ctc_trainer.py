@@ -11,8 +11,8 @@ from src.utils.text_utils import label_fingerprint, label_fingerprint_problem
 from src.training.base_trainer import BaseTrainer
 
 class CTCTrainer(BaseTrainer):
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, log_filename='training.log'):
+        super().__init__(config, log_filename)
         # True for schedulers that advance every optimizer step (e.g. OneCycleLR)
         # rather than once per epoch. setup_optimizer() may override this.
         self.step_scheduler_per_batch = False

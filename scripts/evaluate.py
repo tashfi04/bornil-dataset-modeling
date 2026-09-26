@@ -9,6 +9,12 @@ results, and what turns a saved checkpoint back into a usable model.
 
 By default it reads best_model.pth from the config's checkpoint directory and
 scores the full split, ignoring any max_val_batches cap used during training.
+Results sit with the model's other outputs, e.g. for the overfit config:
+
+    outputs/vivit_ctc_overfit/checkpoints/                   (training)
+    outputs/vivit_ctc_overfit/training.log                   (training)
+    outputs/vivit_ctc_overfit/evaluation/<split>_<checkpoint name>.json
+    outputs/vivit_ctc_overfit/evaluate.log
 """
 import os
 import sys
@@ -33,7 +39,8 @@ def main():
                         help="Checkpoint file (defaults to best_model.pth in the "
                              "config's checkpoint directory)")
     parser.add_argument('--save-predictions', default=None,
-                        help="Write every target/prediction pair to this JSON file")
+                        help="Results file (defaults to <split>_<checkpoint name>.json "
+                             "in the model's evaluation directory)")
     parser.add_argument('--limit', type=int, default=None,
                         help="Only score this many batches (debugging)")
     args = parser.parse_args()
@@ -59,7 +66,7 @@ def main():
     print(f"=== EVALUATION ===")
     print(f"Model: {args.model} ({args.config} config)   split: {args.split}")
 
-    trainer = Trainer(config)
+    trainer = Trainer(config, log_filename='evaluate.log')
 
     checkpoint_path = args.checkpoint or os.path.join(
         trainer.checkpoint_dir, 'best_model.pth')
@@ -113,21 +120,22 @@ def main():
         print(f"  target: {target[:90]}")
         print(f"  pred  : {prediction[:90]}")
 
-    if args.save_predictions:
-        os.makedirs(os.path.dirname(os.path.abspath(args.save_predictions)) or '.',
-                    exist_ok=True)
-        with open(args.save_predictions, 'w', encoding='utf-8') as f:
-            json.dump({
-                'model': args.model,
-                'config': args.config,
-                'split': args.split,
-                'checkpoint': checkpoint_path,
-                'epoch': checkpoint.get('epoch'),
-                'metrics': metrics,
-                'pairs': [{'target': t, 'prediction': p}
-                          for t, p in zip(targets, predictions)],
-            }, f, ensure_ascii=False, indent=2)
-        print(f"\nWrote predictions to {args.save_predictions}")
+    results_path = args.save_predictions or os.path.join(
+        trainer.evaluation_dir,
+        f"{args.split}_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.json")
+    os.makedirs(os.path.dirname(os.path.abspath(results_path)), exist_ok=True)
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'model': args.model,
+            'config': args.config,
+            'split': args.split,
+            'checkpoint': checkpoint_path,
+            'epoch': checkpoint.get('epoch'),
+            'metrics': metrics,
+            'pairs': [{'target': t, 'prediction': p}
+                      for t, p in zip(targets, predictions)],
+        }, f, ensure_ascii=False, indent=2)
+    print(f"\nWrote metrics and predictions to {results_path}")
 
 
 if __name__ == "__main__":

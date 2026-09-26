@@ -176,7 +176,7 @@ def main():
     from src.utils.text_utils import label_fingerprint_problem
 
     config.auto_resume = False
-    trainer = ViViTTrainer(config)
+    trainer = ViViTTrainer(config, log_filename='diagnose.log')
     model = getattr(trainer.model, 'module', trainer.model)
     model.eval()
     device = config.device
