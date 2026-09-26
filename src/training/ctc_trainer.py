@@ -457,6 +457,8 @@ class CTCTrainer(BaseTrainer):
             if metrics is not None:
                 self.logger.info(
                     f"Metrics ({self._metrics_split()}) - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
+                    f"BLEU-4: {metrics['bleu4']:.2f}, ROUGE-L: {metrics['rouge_l']:.2f}, "
+                    f"chrF: {metrics['chrf']:.2f}, "
                     f"Exact Match: {metrics['exact_match_accuracy']:.4f}, "
                     f"Token Accuracy: {metrics['token_accuracy']:.4f}"
                 )

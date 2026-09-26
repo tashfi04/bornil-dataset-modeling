@@ -97,9 +97,13 @@ def main():
     print(f"\n=== RESULTS on {args.split} ({len(predictions)} samples) ===")
     print(f"  WER: {metrics['wer']:.4f}")
     print(f"  CER: {metrics['cer']:.4f}")
+    print("  BLEU-1/2/3/4: " + " / ".join(f"{metrics[f'bleu{n}']:.2f}" for n in range(1, 5)))
+    print(f"  ROUGE-L: {metrics['rouge_l']:.2f}")
+    print(f"  chrF: {metrics['chrf']:.2f}")
     print(f"  Exact match: {metrics['exact_match_accuracy']:.4f}")
     print(f"  Token accuracy: {metrics['token_accuracy']:.4f}")
     print(f"  Empty predictions: {empty} ({100 * empty / max(1, len(predictions)):.1f}%)")
+    print(f"  BLEU signature: {metrics['bleu_signature']}")
     if empty == len(predictions):
         print("  Every prediction is empty, which is what CTC collapsing to all-blank"
               " looks like. WER near 1.0 here means the model is not emitting tokens.")
