@@ -10,10 +10,10 @@ class CNNBiLSTMCTC(nn.Module):
 
         # CNN backbone
         if cnn_backbone == "resnet18":
-            cnn_model = resnet18(weights="IMAGENET1K_V1")  # FIXED: modern API
+            cnn_model = resnet18(weights="IMAGENET1K_V1")
             self.cnn_feature_size = 512
         elif cnn_backbone == "resnet34":
-            cnn_model = resnet34(weights="IMAGENET1K_V1")  # FIXED: modern API
+            cnn_model = resnet34(weights="IMAGENET1K_V1")
             self.cnn_feature_size = 512
         else:
             raise ValueError(f"Unsupported CNN backbone: {cnn_backbone}")
@@ -61,7 +61,7 @@ class CNNBiLSTMCTC(nn.Module):
             invalid_indices = (video_lengths > timesteps).nonzero().squeeze()
             print(f"ERROR: Video lengths {video_lengths[invalid_indices]} exceed temporal dimension {timesteps}")
 
-        # Use the device of the input tensor to ensure consistency between multipleGPUs
+        # Use the device of the input tensor to ensure consistency between multiple GPUs
         device = x.device
 
         # Fold time into the batch dimension so the CNN sees every frame at once

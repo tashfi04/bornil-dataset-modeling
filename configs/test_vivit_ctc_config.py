@@ -2,20 +2,19 @@ import os
 from configs.base_config import config as base_config
 
 class TestViViTCTCConfig:
-# Model architecture
+    # Model architecture
     model_type = "vivit_ctc_test"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
-    # Read features from this encoder layer and drop the rest. The Kinetics
-    # checkpoint keeps temporal information in its middle layers (share of
-    # variance from change over time peaks at 0.51 at layer 7) and folds it away
-    # in the last five, leaving 0.008 at the final output. See
-    # scripts/diagnose_temporal.py.
+    # Read features from this encoder layer and drop the later ones. The last
+    # layers of the Kinetics checkpoint condense a clip into one summary and lose
+    # the variation over time that CTC needs; scripts/diagnose_temporal.py
+    # measures this per layer.
     vivit_feature_layer = 7
 
     # Model parameters
     freeze_backbone = True
     # Train the position embeddings even while the backbone is frozen. Adds ~2.5M
-    # trainable parameters and gives the CTC head a usable notion of time.
+    # trainable parameters.
     trainable_position_embeddings = True
 
     # Training

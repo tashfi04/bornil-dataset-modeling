@@ -117,8 +117,8 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Normalize all texts using the normalize_text function
     texts = df['text'].astype(str).apply(normalize_text).tolist()
 
-    # Located next to output_path rather than the CWD, which on Kaggle is not
-    # the repo root
+    # Written next to the output file, since the working directory is not
+    # always the repo root
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
     temp_file = os.path.join(output_dir, "temp_texts_for_bpe.txt")
@@ -129,11 +129,10 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
 
-    # Metaspace encodes each space as a marker on the following token, so the
-    # token sequence records where words begin. A whitespace pre-tokenizer
-    # discards that, and word boundaries are then unrecoverable from a decoded
-    # CTC output: a memorised sentence still comes back split into sub-words.
-    # The matching decoder turns the markers back into spaces.
+    # Metaspace marks the start of each word on its first token, so the token
+    # sequence keeps word boundaries and the matching decoder can restore the
+    # spaces. A whitespace pre-tokenizer drops them, and decoded output would
+    # come back split into sub-words.
     tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
     tokenizer.decoder = decoders.Metaspace()
 

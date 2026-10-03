@@ -286,8 +286,7 @@ class CTCTrainer(BaseTrainer):
             written.append(epoch_path)
             self._prune_epoch_checkpoints()
 
-        # Confirm what actually landed on disk. If these lines report a file and
-        # it is missing later, something outside training removed it.
+        # Log each file written, with its size
         for path in written:
             if os.path.exists(path):
                 self.logger.info(

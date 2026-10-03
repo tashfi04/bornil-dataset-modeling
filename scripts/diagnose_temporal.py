@@ -1,11 +1,9 @@
-"""Find where temporal information is lost in the ViViT-CTC model.
+"""Measure how much temporal information each stage of ViViT-CTC keeps.
 
-The overfit check showed the model cannot memorise 200 clips: training loss
-plateaus and greedy decoding stays mostly blank. CTC can only emit a sequence
-if the model's output changes over time, so this measures how much each stage
-varies across the time steps of a clip, compared with how much it varies
-between clips. It does this for the pretrained weights and for a trained
-checkpoint, on the same clips.
+CTC can only emit a sequence if the model's output changes over time, so this
+measures how much each stage varies across the time steps of a clip, compared
+with how much it varies between clips, including at every ViViT layer. It does
+this for the pretrained weights and for a trained checkpoint, on the same clips.
 
     python scripts/diagnose_temporal.py
     python scripts/diagnose_temporal.py --checkpoint path/to/last_checkpoint.pth
@@ -211,7 +209,7 @@ def main():
         try:
             model.load_state_dict(checkpoint['model_state_dict'])
         except RuntimeError as exc:
-            # e.g. a checkpoint saved before the encoder was truncated
+            # e.g. a checkpoint with a different number of encoder layers
             print(f"\nSkipping {checkpoint_path}: it does not match this model's "
                   f"architecture ({str(exc).splitlines()[0]})")
         else:

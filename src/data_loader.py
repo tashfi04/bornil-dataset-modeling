@@ -166,8 +166,8 @@ class BdSLDataset(Dataset):
                 raise RuntimeError(message)
             logger.warning(message)
 
-        # num_frames does not change validity, only whether short videos get
-        # zero-padded, so it is worth reporting but not worth refusing to run
+        # num_frames does not change which samples are valid, so a mismatch is
+        # worth reporting but not worth refusing to run
         recorded_frames = payload.get('num_frames')
         if recorded_frames is not None and recorded_frames != self.config.num_frames:
             logger.info(

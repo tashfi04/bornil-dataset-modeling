@@ -1,7 +1,7 @@
 """Decode each video once, sample and resize its frames, and cache them as JPEG.
 
-The source clips are 400-1200 frame webm files that must be decoded
-sequentially, which dominates epoch time. Caching the sampled frames removes
+The source clips are webm files that must be decoded sequentially, which
+dominates epoch time. Caching the sampled frames removes
 that cost from training.
 
 Start with a dry run to check the projected disk cost before writing anything:

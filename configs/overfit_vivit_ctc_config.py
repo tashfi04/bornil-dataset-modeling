@@ -2,23 +2,20 @@ import os
 from configs.base_config import config as base_config
 
 class OverfitViViTCTCConfig:
-    """Deliberately overfit a small fixed subset, as a capability check.
+    """Overfit a small fixed subset to check the model can learn the task.
 
-    This answers one question: can the architecture learn this mapping at all?
-    A model that cannot memorise 200 clips will not learn 13,000 either, so a
-    failure here means something is wrong that more data and more epochs cannot
-    fix. It is not a quality measurement - validation numbers are expected to
-    get worse, because memorising is the point.
+    A model that cannot memorise 200 clips will not learn from the full
+    training set either. This is not a quality measurement: validation metrics
+    are expected to get worse as the subset is memorised.
     """
 
-# Model architecture
+    # Model architecture
     model_type = "vivit_ctc_overfit"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
-    # Read features from this encoder layer and drop the rest. The Kinetics
-    # checkpoint keeps temporal information in its middle layers (share of
-    # variance from change over time peaks at 0.51 at layer 7) and folds it away
-    # in the last five, leaving 0.008 at the final output. See
-    # scripts/diagnose_temporal.py.
+    # Read features from this encoder layer and drop the later ones. The last
+    # layers of the Kinetics checkpoint condense a clip into one summary and lose
+    # the variation over time that CTC needs; scripts/diagnose_temporal.py
+    # measures this per layer.
     vivit_feature_layer = 7
 
     # Model parameters

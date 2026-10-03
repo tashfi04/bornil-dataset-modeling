@@ -71,8 +71,8 @@ class TemporalCompressor(nn.Module):
             return F.adaptive_avg_pool3d(
                 x, (self.target_frames, x.size(3), x.size(4))
             )
-        # Shorter than the target: stretch the motion over the full window.
-        # Linear in time beats repeating frames, and beats padding with black.
+        # Shorter than the target: stretch the clip over the full window by
+        # linear interpolation in time, rather than repeating or padding frames.
         return F.interpolate(
             x, size=(self.target_frames, x.size(3), x.size(4)),
             mode='trilinear', align_corners=False,
@@ -177,10 +177,9 @@ class ViViT_CTC_HF(nn.Module):
             for param in self.vivit.parameters():
                 param.requires_grad = False
 
-            # The Kinetics checkpoint encodes far more about *where* than *when*
-            # (measured: temporal-adjacent positions ~700x closer than spatial
-            # ones). Freezing them leaves the CTC head with almost no sense of
-            # ordering, so they can be trained while the rest stays frozen.
+            # The Kinetics position embeddings vary much more across space than
+            # across time, so they can be trained to give the model a stronger
+            # sense of temporal order while the rest of the backbone stays frozen.
             if getattr(config, 'trainable_position_embeddings', False):
                 self.vivit.embeddings.position_embeddings.requires_grad = True
 

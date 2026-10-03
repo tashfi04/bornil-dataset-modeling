@@ -27,7 +27,7 @@ def tokenize(config, vocab_size):
     token_counts = []
     for text in texts:
         encoded = tokenizer.encode(text)
-        # Add 1 to account for blank shift (even though we don't shift here, the number of tokens is the same)
+        # The +1 blank shift applied in training does not change the count
         token_counts.append(len(encoded.ids))
 
 

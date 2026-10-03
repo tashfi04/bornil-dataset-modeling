@@ -47,8 +47,7 @@ def print_run_summary(config, title):
         shown = ', '.join(f"{k}={v or 'full'}" for k, v in subsets.items())
         print(f"Fixed subsets: {shown} (same samples every epoch)")
 
-    # Stated plainly because checkpoints are easy to lose track of when the
-    # output directory is overridden per environment
+    # Where this run writes its checkpoints and log
     out_dir = getattr(config, 'model_output_dir', None)
     if out_dir:
         print(f"Output dir: {out_dir}")
