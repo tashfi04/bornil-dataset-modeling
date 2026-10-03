@@ -9,6 +9,12 @@ results, and what turns a saved checkpoint back into a usable model.
 
 By default it reads best_model.pth from the config's checkpoint directory and
 scores the full split, ignoring any max_val_batches cap used during training.
+Results sit with the model's other outputs, e.g. for the overfit config:
+
+    outputs/vivit_ctc_overfit/checkpoints/                   (training)
+    outputs/vivit_ctc_overfit/training.log                   (training)
+    outputs/vivit_ctc_overfit/evaluation/<split>_<checkpoint name>.json
+    outputs/vivit_ctc_overfit/evaluate.log
 """
 import os
 import sys
@@ -20,19 +26,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from src.utils.metrics import calculate_all_metrics
+from src.utils.text_utils import label_fingerprint_problem
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained checkpoint")
     parser.add_argument('--model', choices=['vivit', 'cnn_bilstm'], default='vivit')
-    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+    parser.add_argument('--config', choices=['prod', 'test', 'overfit'], default='prod',
                         help="Which config variant the checkpoint was trained with")
     parser.add_argument('--split', choices=['test', 'val', 'train'], default='test')
     parser.add_argument('--checkpoint', default=None,
                         help="Checkpoint file (defaults to best_model.pth in the "
                              "config's checkpoint directory)")
     parser.add_argument('--save-predictions', default=None,
-                        help="Write every target/prediction pair to this JSON file")
+                        help="Results file (defaults to <split>_<checkpoint name>.json "
+                             "in the model's evaluation directory)")
     parser.add_argument('--limit', type=int, default=None,
                         help="Only score this many batches (debugging)")
     args = parser.parse_args()
@@ -40,6 +48,8 @@ def main():
     if args.model == 'vivit':
         if args.config == 'test':
             from configs.test_vivit_ctc_config import config
+        elif args.config == 'overfit':
+            from configs.overfit_vivit_ctc_config import config
         else:
             from configs.vivit_ctc_config import config
         from src.training.vivit_trainer import ViViTTrainer as Trainer
@@ -56,7 +66,7 @@ def main():
     print(f"=== EVALUATION ===")
     print(f"Model: {args.model} ({args.config} config)   split: {args.split}")
 
-    trainer = Trainer(config)
+    trainer = Trainer(config, log_filename='evaluate.log')
 
     checkpoint_path = args.checkpoint or os.path.join(
         trainer.checkpoint_dir, 'best_model.pth')
@@ -70,6 +80,10 @@ def main():
     if saved_classes is not None and saved_classes != trainer.num_classes:
         print(f"\nCheckpoint has {saved_classes} output classes but this config "
               f"builds {trainer.num_classes}. The tokenizer or vocabulary changed.")
+        sys.exit(1)
+    problem = label_fingerprint_problem(checkpoint, trainer.label_fingerprint, checkpoint_path)
+    if problem:
+        print(f"\n{problem} Its scores would be meaningless.")
         sys.exit(1)
 
     base_model = getattr(trainer.model, 'module', trainer.model)
@@ -90,9 +104,13 @@ def main():
     print(f"\n=== RESULTS on {args.split} ({len(predictions)} samples) ===")
     print(f"  WER: {metrics['wer']:.4f}")
     print(f"  CER: {metrics['cer']:.4f}")
+    print("  BLEU-1/2/3/4: " + " / ".join(f"{metrics[f'bleu{n}']:.2f}" for n in range(1, 5)))
+    print(f"  ROUGE-L: {metrics['rouge_l']:.2f}")
+    print(f"  chrF: {metrics['chrf']:.2f}")
     print(f"  Exact match: {metrics['exact_match_accuracy']:.4f}")
     print(f"  Token accuracy: {metrics['token_accuracy']:.4f}")
     print(f"  Empty predictions: {empty} ({100 * empty / max(1, len(predictions)):.1f}%)")
+    print(f"  BLEU signature: {metrics['bleu_signature']}")
     if empty == len(predictions):
         print("  Every prediction is empty, which is what CTC collapsing to all-blank"
               " looks like. WER near 1.0 here means the model is not emitting tokens.")
@@ -102,21 +120,22 @@ def main():
         print(f"  target: {target[:90]}")
         print(f"  pred  : {prediction[:90]}")
 
-    if args.save_predictions:
-        os.makedirs(os.path.dirname(os.path.abspath(args.save_predictions)) or '.',
-                    exist_ok=True)
-        with open(args.save_predictions, 'w', encoding='utf-8') as f:
-            json.dump({
-                'model': args.model,
-                'config': args.config,
-                'split': args.split,
-                'checkpoint': checkpoint_path,
-                'epoch': checkpoint.get('epoch'),
-                'metrics': metrics,
-                'pairs': [{'target': t, 'prediction': p}
-                          for t, p in zip(targets, predictions)],
-            }, f, ensure_ascii=False, indent=2)
-        print(f"\nWrote predictions to {args.save_predictions}")
+    results_path = args.save_predictions or os.path.join(
+        trainer.evaluation_dir,
+        f"{args.split}_{os.path.splitext(os.path.basename(checkpoint_path))[0]}.json")
+    os.makedirs(os.path.dirname(os.path.abspath(results_path)), exist_ok=True)
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'model': args.model,
+            'config': args.config,
+            'split': args.split,
+            'checkpoint': checkpoint_path,
+            'epoch': checkpoint.get('epoch'),
+            'metrics': metrics,
+            'pairs': [{'target': t, 'prediction': p}
+                      for t, p in zip(targets, predictions)],
+        }, f, ensure_ascii=False, indent=2)
+    print(f"\nWrote metrics and predictions to {results_path}")
 
 
 if __name__ == "__main__":

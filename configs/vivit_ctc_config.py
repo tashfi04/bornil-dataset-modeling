@@ -5,9 +5,17 @@ class ViViTCTCConfig:
     # Model architecture
     model_type = "vivit_ctc"
     vivit_model_name = "google/vivit-b-16x2-kinetics400"
+    # Read features from this encoder layer and drop the later ones. The last
+    # layers of the Kinetics checkpoint condense a clip into one summary and lose
+    # the variation over time that CTC needs; scripts/diagnose_temporal.py
+    # measures this per layer.
+    vivit_feature_layer = 7
 
     # Model parameters
     freeze_backbone = True
+    # Train the position embeddings even while the backbone is frozen. Adds ~2.5M
+    # trainable parameters.
+    trainable_position_embeddings = False
 
     # Training
     learning_rate = 5e-5

@@ -19,7 +19,6 @@ from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from configs.base_config import config
 from src.utils.video_stats import (
     covered_recordings, load_video_stats, save_video_stats, scan_videos, summarize,
 )
@@ -27,6 +26,8 @@ from src.utils.video_stats import (
 
 def main():
     parser = argparse.ArgumentParser(description="Scan videos for frame counts")
+    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+                        help="test reads the dataset from the Kaggle test config's paths")
     parser.add_argument('--out', default=None,
                         help="Stats file (defaults to config.video_stats_path)")
     parser.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 1))
@@ -35,6 +36,11 @@ def main():
     parser.add_argument('--limit', type=int, default=None,
                         help="Only scan the first N rows")
     args = parser.parse_args()
+
+    if args.config == 'test':
+        from configs.test_vivit_ctc_config import config
+    else:
+        from configs.base_config import config
 
     out_path = args.out or config.video_stats_path
     df = pd.read_csv(config.csv_path)

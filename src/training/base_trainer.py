@@ -4,14 +4,17 @@ import torch
 from abc import ABC, abstractmethod
 
 class BaseTrainer(ABC):
-    def __init__(self, config):
+    def __init__(self, config, log_filename='training.log'):
+        # Scripts that only load a checkpoint pass their own log name, so they
+        # do not append to the log of the run that produced it
         self.config = config
+        self.log_filename = log_filename
         self.setup_logging()
         self.setup_directories()
 
     def setup_logging(self):
         """Setup logging configuration"""
-        log_path = os.path.join(self.config.model_output_dir, 'training.log')
+        log_path = os.path.join(self.config.model_output_dir, self.log_filename)
         # force=True because importing src.data_loader already called
         # basicConfig, which would otherwise make this a silent no-op and leave
         # training.log empty
@@ -31,6 +34,9 @@ class BaseTrainer(ABC):
         os.makedirs(self.config.model_output_dir, exist_ok=True)
         self.checkpoint_dir = os.path.join(self.config.model_output_dir, 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        # Created by scripts/evaluate.py when it first writes, so training runs
+        # do not leave an empty directory behind
+        self.evaluation_dir = os.path.join(self.config.model_output_dir, 'evaluation')
 
     @abstractmethod
     def setup_data(self):

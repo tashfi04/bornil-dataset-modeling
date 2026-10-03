@@ -19,8 +19,8 @@ class BaseConfig:
     bpe_vocab_size = 2000
     # Sentences longer than this are dropped. CTC needs input_length >=
     # target_length and the ViViT-CTC time axis is compressed_frames // 2, so
-    # this must stay at or below that. 32 tokens keeps 92.6% of the sentences
-    # at a 2000-token vocabulary.
+    # this must stay at or below that. 32 tokens keeps about 90% of the
+    # sentences at a 2000-token vocabulary.
     max_bpe_tokens = 32
 
     # Cache root built by scripts/preprocess_cache_frames.py. Set this to skip
@@ -46,13 +46,10 @@ class BaseConfig:
     resume_from = None
 
     # Every checkpoint is a few hundred MB, so only the latest and the best are
-    # kept by default. Enable to also keep one file per epoch.
+    # kept by default. Enable to also keep one file per epoch, and cap how many
+    # of those are retained.
     keep_epoch_checkpoints = False
-
-    # Cap batches per epoch. None means a full pass; a small number exercises the
-    # whole training loop quickly, which matters while video is decoded live.
-    max_train_batches = None
-    max_val_batches = None
+    max_epoch_checkpoints = 3
 
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")
     output_dir = os.path.join(repo_root, "outputs")

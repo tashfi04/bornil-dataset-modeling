@@ -1,26 +1,22 @@
 # Core Deep Learning
 torch>=2.0.0
-torchvision>=0.15.0
+torchvision>=0.15.0       # ResNet backbone for CNN-BiLSTM
+transformers>=4.30.0      # pretrained ViViT
 
-# Computer Vision
+# Video
 opencv-python>=4.7.0
-Pillow>=9.0.0
 
 # Data Processing
 pandas>=1.5.0
 numpy>=1.24.0
-scikit-learn>=1.2.0
+scikit-learn>=1.2.0       # stratified train/val/test split
 
-# NLP & Text Processing
-transformers>=4.30.0
+# Text
+tokenizers>=0.15.0        # BPE; the saved Metaspace tokenizer needs 0.15+ to load
+
+# Evaluation
+editdistance>=0.6.0       # WER, CER
+sacrebleu>=2.0.0          # BLEU, chrF
 
 # Utilities
 tqdm>=4.65.0
-editdistance>=0.6.0
-
-# Logging & Visualization
-tensorboard>=2.13.0
-matplotlib>=3.7.0
-
-# Configuration & Serialization
-PyYAML>=6.0

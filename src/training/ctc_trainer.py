@@ -6,12 +6,13 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from src.utils.metrics import calculate_all_metrics
+from src.utils.text_utils import label_fingerprint, label_fingerprint_problem
 
 from src.training.base_trainer import BaseTrainer
 
 class CTCTrainer(BaseTrainer):
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, log_filename='training.log'):
+        super().__init__(config, log_filename)
         # True for schedulers that advance every optimizer step (e.g. OneCycleLR)
         # rather than once per epoch. setup_optimizer() may override this.
         self.step_scheduler_per_batch = False
@@ -64,6 +65,8 @@ class CTCTrainer(BaseTrainer):
             self.tokenizer = None
             self.num_classes = len(self.vocab['char_to_id'])
 
+        self.label_fingerprint = label_fingerprint(self.config)
+
         # Optional caps for smoke runs, so the whole loop can be exercised without
         # decoding the entire dataset
         self.train_batches = self._capped(len(self.train_loader), 'max_train_batches')
@@ -72,7 +75,7 @@ class CTCTrainer(BaseTrainer):
             self.logger.warning(
                 f"Batch caps active: {self.train_batches}/{len(self.train_loader)} train, "
                 f"{self.val_batches}/{len(self.val_loader)} val batches per epoch. "
-                f"Set max_train_batches/max_val_batches to None for a full pass."
+                f"Remove max_train_batches/max_val_batches from the config for a full pass."
             )
 
         self.logger.info(f"Tokenization: {self.tokenization_type}")
@@ -171,7 +174,8 @@ class CTCTrainer(BaseTrainer):
                 # accumulated_loss is the sum over this window, so divide by the
                 # batches in it to stay comparable with the validation loss
                 window_batches = max(1, self.accumulation_count)
-                current_lr = self.optimizer.param_groups[0]['lr']
+                # The last group is the head, which carries the main learning rate
+                current_lr = self.optimizer.param_groups[-1]['lr']
                 pbar.set_postfix({
                     'Loss': f'{accumulated_loss / window_batches:.4f}',
                     'LR': f'{current_lr:.2e}',
@@ -246,6 +250,7 @@ class CTCTrainer(BaseTrainer):
             'val_loss': val_loss,
             'model_type': getattr(self.config, 'model_type', None),
             'num_classes': self.num_classes,
+            'label_fingerprint': self.label_fingerprint,
             'training_state': training_state or {},
         }
         if self.scheduler is not None:
@@ -253,12 +258,82 @@ class CTCTrainer(BaseTrainer):
         if self.use_amp:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
 
-        torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'last_checkpoint.pth'))
+        written = []
+        last_path = os.path.join(self.checkpoint_dir, 'last_checkpoint.pth')
+        torch.save(checkpoint, last_path)
+        written.append(last_path)
+
         if is_best:
-            torch.save(checkpoint, os.path.join(self.checkpoint_dir, 'best_model.pth'))
+            # The best checkpoint is for evaluation and sharing, not for resuming,
+            # so the optimizer state is dropped.
+            best_path = os.path.join(self.checkpoint_dir, 'best_model.pth')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': checkpoint['model_state_dict'],
+                'val_loss': val_loss,
+                'model_type': checkpoint['model_type'],
+                'num_classes': checkpoint['num_classes'],
+                'label_fingerprint': checkpoint['label_fingerprint'],
+                'training_state': checkpoint['training_state'],
+                'weights_only': True,
+            }, best_path)
+            written.append(best_path)
+
         if getattr(self.config, 'keep_epoch_checkpoints', False):
-            torch.save(checkpoint, os.path.join(
-                self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth'))
+            epoch_path = os.path.join(
+                self.checkpoint_dir, f'checkpoint_epoch_{epoch:03d}.pth')
+            torch.save(checkpoint, epoch_path)
+            written.append(epoch_path)
+            self._prune_epoch_checkpoints()
+
+        # Log each file written, with its size
+        for path in written:
+            if os.path.exists(path):
+                self.logger.info(
+                    f"Saved {path} ({os.path.getsize(path) / 1024 ** 2:.0f} MB)"
+                )
+            else:
+                self.logger.error(f"torch.save reported success but {path} is missing")
+
+    def _prune_epoch_checkpoints(self):
+        """Keep only the most recent per-epoch checkpoints, if a limit is set."""
+        limit = getattr(self.config, 'max_epoch_checkpoints', None)
+        if not limit:
+            return
+
+        epoch_files = sorted(
+            name for name in os.listdir(self.checkpoint_dir)
+            if name.startswith('checkpoint_epoch_') and name.endswith('.pth')
+        )
+        for name in epoch_files[:-limit]:
+            path = os.path.join(self.checkpoint_dir, name)
+            try:
+                os.remove(path)
+                self.logger.info(f"Removed old checkpoint {name}")
+            except OSError as exc:
+                self.logger.warning(f"Could not remove {path}: {exc}")
+
+    def _report_checkpoints(self):
+        """List what survived in the checkpoint directory when training ends."""
+        if not os.path.isdir(self.checkpoint_dir):
+            self.logger.error(
+                f"Checkpoint directory {self.checkpoint_dir} does not exist at the "
+                f"end of training. Something removed it."
+            )
+            return
+
+        entries = sorted(os.listdir(self.checkpoint_dir))
+        if not entries:
+            self.logger.error(
+                f"Checkpoint directory {self.checkpoint_dir} is empty at the end of "
+                f"training, although checkpoints were written to it."
+            )
+            return
+
+        self.logger.info(f"Checkpoints in {self.checkpoint_dir}:")
+        for name in entries:
+            size = os.path.getsize(os.path.join(self.checkpoint_dir, name))
+            self.logger.info(f"  {name} ({size / 1024 ** 2:.0f} MB)")
 
     def _resume_checkpoint_path(self):
         """An explicit `resume_from` wins; otherwise pick up last_checkpoint.pth."""
@@ -292,6 +367,12 @@ class CTCTrainer(BaseTrainer):
                 f"Checkpoint has {saved_classes} output classes but this run has "
                 f"{self.num_classes}; the tokenizer or vocabulary changed."
             )
+        problem = label_fingerprint_problem(checkpoint, self.label_fingerprint, path)
+        if problem:
+            raise RuntimeError(
+                f"{problem} Resuming would continue training against the wrong "
+                f"targets. Move the old checkpoints aside or set auto_resume=False."
+            )
 
         state = dict(checkpoint.get('training_state') or {})
 
@@ -303,7 +384,14 @@ class CTCTrainer(BaseTrainer):
 
         base_model = getattr(self.model, 'module', self.model)
         base_model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        else:
+            self.logger.warning(
+                f"{path} carries weights only, so the optimizer starts fresh. "
+                f"Resume from last_checkpoint.pth to continue exactly."
+            )
 
         if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
             try:
@@ -356,14 +444,20 @@ class CTCTrainer(BaseTrainer):
             # Per-step schedulers already advanced inside train_epoch
             if not self.step_scheduler_per_batch and self.scheduler is not None:
                 self.scheduler.step(val_loss)
-            current_lr = self.optimizer.param_groups[0]['lr']
-            self.logger.info(f"Learning Rate: {current_lr:.2e}")
+            groups = self.optimizer.param_groups
+            if len(groups) == 1:
+                self.logger.info(f"Learning Rate: {groups[0]['lr']:.2e}")
+            else:
+                self.logger.info("Learning Rate: " + ", ".join(
+                    f"{g.get('name', i)}={g['lr']:.2e}" for i, g in enumerate(groups)))
 
             # Calculate metrics (less frequently to save time)
             metrics = self.calculate_wer_cer(epoch)
             if metrics is not None:
                 self.logger.info(
-                    f"Metrics - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
+                    f"Metrics ({self._metrics_split()}) - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
+                    f"BLEU-4: {metrics['bleu4']:.2f}, ROUGE-L: {metrics['rouge_l']:.2f}, "
+                    f"chrF: {metrics['chrf']:.2f}, "
                     f"Exact Match: {metrics['exact_match_accuracy']:.4f}, "
                     f"Token Accuracy: {metrics['token_accuracy']:.4f}"
                 )
@@ -399,6 +493,8 @@ class CTCTrainer(BaseTrainer):
             if patience_counter >= self.config.early_stopping_patience:
                 self.logger.info("Early stopping triggered!")
                 break
+
+        self._report_checkpoints()
 
     def _autocast(self):
         """Mixed-precision context for the forward pass; a no-op when disabled."""
@@ -489,10 +585,16 @@ class CTCTrainer(BaseTrainer):
         backbone_ids = {id(p) for p in backbone.parameters()}
         head_params = [p for p in base_model.parameters() if id(p) not in backbone_ids]
 
-        self.optimizer = Adam(
-            [{'params': list(backbone.parameters()), 'lr': self.config.learning_rate / 10},
-             {'params': head_params}],
-            lr=self.config.learning_rate
+        # Keep the optimizer type and settings the run started with; ViViT uses
+        # AdamW with weight decay, CNN-BiLSTM plain Adam
+        kept = {k: v for k, v in self.optimizer.defaults.items()
+                if k in ('betas', 'eps', 'weight_decay')}
+        self.optimizer = type(self.optimizer)(
+            [{'params': list(backbone.parameters()), 'lr': self.config.learning_rate / 10,
+              'name': 'backbone'},
+             {'params': head_params, 'name': 'head'}],
+            lr=self.config.learning_rate,
+            **kept,
         )
         # A per-step schedule does not carry over to the rebuilt optimizer
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5)
@@ -550,22 +652,29 @@ class CTCTrainer(BaseTrainer):
 
         return all_targets, all_predictions
 
+    def _metrics_split(self):
+        """Which split WER/CER are computed on. An overfit check sets 'train'."""
+        return getattr(self.config, 'metrics_split', 'val')
+
     def calculate_wer_cer(self, epoch):
         """Calculate comprehensive evaluation metrics"""
         interval = max(1, getattr(self.config, 'metrics_interval', 5))
         if epoch % interval != 0:
             return None
 
-        all_targets, all_predictions = self.decode_loader(
-            self.val_loader, max_batches=self.val_batches
-        )
+        split = self._metrics_split()
+        if split == 'train':
+            loader, cap = self.train_loader, self.train_batches
+        else:
+            loader, cap = self.val_loader, self.val_batches
+        all_targets, all_predictions = self.decode_loader(loader, max_batches=cap)
         metrics = calculate_all_metrics(all_targets, all_predictions)
 
         # A few decoded examples, because falling loss alone cannot distinguish
         # real learning from CTC collapsing to all-blank (which decodes to "")
         empty = sum(1 for p in all_predictions if not p.strip())
         self.logger.info(
-            f"Decoded {len(all_predictions)} val samples, {empty} of them empty "
+            f"Decoded {len(all_predictions)} {split} samples, {empty} of them empty "
             f"({100 * empty / max(1, len(all_predictions)):.0f}%)"
         )
         for target, prediction in list(zip(all_targets, all_predictions))[:3]:

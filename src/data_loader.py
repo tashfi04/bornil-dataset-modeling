@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 
-from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids
+from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids, normalize_text
 from src.utils.frame_cache import cache_path, read_cached_frames
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit
 
@@ -100,10 +100,30 @@ class BdSLDataset(Dataset):
             logger.info(f"Reading frames from cache: {self.cache_root}")
 
         self.valid_indices = self._build_valid_indices()
+        self._apply_subset()
 
         logger.info(f"Initialized {mode} dataset with {len(self.valid_indices)} valid samples (out of {len(self.df)})")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
         logger.info(f"Tokenization type: {self.tokenization_type}")
+
+    def _apply_subset(self):
+        """Restrict this split to a fixed random subset, if one is configured.
+
+        The selection is seeded, so the same samples come back every epoch and
+        across runs. That is what makes an overfit check meaningful: a batch cap
+        reshuffles, so the model never sees the same data twice.
+        """
+        size = getattr(self.config, f'{self.mode}_subset_size', None)
+        if not size or size >= len(self.valid_indices):
+            return
+
+        rng = np.random.RandomState(getattr(self.config, 'random_seed', 42))
+        chosen = rng.choice(len(self.valid_indices), size=size, replace=False)
+        self.valid_indices = [self.valid_indices[i] for i in sorted(chosen)]
+        logger.warning(
+            f"{self.mode}: restricted to a fixed subset of {size} samples "
+            f"(remove {self.mode}_subset_size from the config for the full split)"
+        )
 
     def _load_approved_samples(self):
         """Read the valid-sample list written by scripts/validate_dataset.py."""
@@ -146,8 +166,8 @@ class BdSLDataset(Dataset):
                 raise RuntimeError(message)
             logger.warning(message)
 
-        # num_frames does not change validity, only whether short videos get
-        # zero-padded, so it is worth reporting but not worth refusing to run
+        # num_frames does not change which samples are valid, so a mismatch is
+        # worth reporting but not worth refusing to run
         recorded_frames = payload.get('num_frames')
         if recorded_frames is not None and recorded_frames != self.config.num_frames:
             logger.info(
@@ -208,7 +228,11 @@ class BdSLDataset(Dataset):
 
         return {
             'video': torch.FloatTensor(video),
-            'text': text_label,
+            # The reference for WER/CER. It must be the normalized text the target
+            # ids were built from: NFKC splits য় ড় ঢ় into letter + nukta, so the
+            # raw CSV text differs in code points from any correct prediction
+            # while looking identical.
+            'text': normalize_text(text_label),
             'text_seq': torch.LongTensor(text_seq),
             'video_path': full_video_path,
             'loaded_successfully': True  # Flag for successful loading video

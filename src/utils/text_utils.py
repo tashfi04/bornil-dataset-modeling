@@ -1,4 +1,4 @@
-import json, re, os, unicodedata
+import json, re, os, hashlib, unicodedata
 import pandas as pd
 from collections import Counter
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, normalizers
@@ -54,7 +54,7 @@ def normalize_text(text: str) -> str:
     # text = ''.join(allowed_pattern.findall(text))
 
     # Collapse runs of whitespace into a single space
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
 
     return text
 
@@ -117,8 +117,8 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Normalize all texts using the normalize_text function
     texts = df['text'].astype(str).apply(normalize_text).tolist()
 
-    # Located next to output_path rather than the CWD, which on Kaggle is not
-    # the repo root
+    # Written next to the output file, since the working directory is not
+    # always the repo root
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
     temp_file = os.path.join(output_dir, "temp_texts_for_bpe.txt")
@@ -129,8 +129,12 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
 
-    # Use a simple whitespace pre‑tokenizer to keep unicode characters intact
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    # Metaspace marks the start of each word on its first token, so the token
+    # sequence keeps word boundaries and the matching decoder can restore the
+    # spaces. A whitespace pre-tokenizer drops them, and decoded output would
+    # come back split into sub-words.
+    tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+    tokenizer.decoder = decoders.Metaspace()
 
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
@@ -140,18 +144,66 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
 
     tokenizer.train([temp_file], trainer)
 
-    # Save tokenizer
-    tokenizer.save(output_path)
-
     # Clean up temp file
     os.remove(temp_file)
+
+    # Decoding is what WER and CER are computed on, so a tokenizer that cannot
+    # round-trip its own training text would make every reported score wrong
+    failures = [t for t in texts[:2000] if tokenizer.decode(tokenizer.encode(t).ids) != t]
+    if failures:
+        raise RuntimeError(
+            f"BPE tokenizer does not round-trip {len(failures)} of 2000 sentences; "
+            f"first mismatch: {failures[0]!r} -> "
+            f"{tokenizer.decode(tokenizer.encode(failures[0]).ids)!r}")
+
+    # Save tokenizer
+    tokenizer.save(output_path)
 
     print(f"BPE tokenizer saved to {output_path} with vocab size {tokenizer.get_vocab_size()}")
     return tokenizer
 
 def load_bpe_tokenizer(tokenizer_path):
     """Load saved BPE tokenizer"""
-    return Tokenizer.from_file(tokenizer_path)
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    if tokenizer.decoder is None:
+        raise RuntimeError(
+            f"{tokenizer_path} has no decoder, so decoding joins sub-word tokens "
+            f"with spaces and inflates WER. Retrain it with "
+            f"scripts/train_bpe_tokenizer.py.")
+    return tokenizer
+
+def label_fingerprint(config):
+    """Short hash of what each output id means under this config.
+
+    Stored in checkpoints so they are never used with a tokenizer whose ids
+    stand for different tokens. The class count cannot catch that on its own: a
+    retrained tokenizer of the same size loads without error and decodes
+    nonsense.
+    """
+    if getattr(config, 'tokenization_type', 'character') == 'bpe':
+        with open(config.bpe_tokenizer_path, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        # Vocabulary, merges and word splitting fix the ids; the decoder only
+        # affects how they are joined back into text
+        content = {key: saved.get(key) for key in ('model', 'pre_tokenizer', 'normalizer')}
+    else:
+        with open(config.vocab_path, 'r', encoding='utf-8') as f:
+            content = json.load(f)['char_to_id']
+    blob = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+def label_fingerprint_problem(checkpoint, expected, path):
+    """Explain why a checkpoint does not match the current labels, or return None."""
+    saved = checkpoint.get('label_fingerprint')
+    if saved is None:
+        return (f"{path} has no tokenizer fingerprint, so it cannot be confirmed to "
+                f"use the current tokenizer. It predates the fingerprint and "
+                f"probably the Metaspace tokenizer too.")
+    if saved != expected:
+        return (f"{path} was trained with a different tokenizer or vocabulary "
+                f"(fingerprint {saved}, current {expected}), so its output ids stand "
+                f"for different tokens.")
+    return None
 
 def text_to_bpe_ids(text, tokenizer, blank_id=0):
     """

@@ -71,8 +71,8 @@ class TemporalCompressor(nn.Module):
             return F.adaptive_avg_pool3d(
                 x, (self.target_frames, x.size(3), x.size(4))
             )
-        # Shorter than the target: stretch the motion over the full window.
-        # Linear in time beats repeating frames, and beats padding with black.
+        # Shorter than the target: stretch the clip over the full window by
+        # linear interpolation in time, rather than repeating or padding frames.
         return F.interpolate(
             x, size=(self.target_frames, x.size(3), x.size(4)),
             mode='trilinear', align_corners=False,
@@ -103,7 +103,8 @@ class ViViT_CTC_HF(nn.Module):
 
     Pipeline: (B, C, T_in, H, W) raw frames
       -> TemporalCompressor          T_in -> compressed_frames
-      -> pretrained ViViT            position embeddings interpolated to our grid
+      -> pretrained ViViT            position embeddings interpolated to our grid,
+                                     optionally truncated to vivit_feature_layer
       -> mean-pool over spatial patches
       -> linear CTC head over the temporal axis, giving (B, T, num_classes)
 
@@ -159,6 +160,7 @@ class ViViT_CTC_HF(nn.Module):
             )
 
         self._retarget_vivit(frame_h, t_patch, h_patch, w_patch)
+        self._truncate_vivit(getattr(config, 'vivit_feature_layer', None))
 
         if getattr(config, 'gradient_checkpointing', False):
             # The compressor is trainable and sits before ViViT, so ViViT's
@@ -175,7 +177,20 @@ class ViViT_CTC_HF(nn.Module):
             for param in self.vivit.parameters():
                 param.requires_grad = False
 
+            # The Kinetics position embeddings vary much more across space than
+            # across time, so they can be trained to give the model a stronger
+            # sense of temporal order while the rest of the backbone stays frozen.
+            if getattr(config, 'trainable_position_embeddings', False):
+                self.vivit.embeddings.position_embeddings.requires_grad = True
+
         hidden_size = self.vivit.config.hidden_size
+        # Normalises the per-step features before the head. When the encoder is
+        # truncated this replaces ViViT's own final LayerNorm, which is fitted to
+        # the last layer's statistics.
+        if self.feature_layer is not None:
+            self.feature_norm = nn.LayerNorm(hidden_size)
+        else:
+            self.feature_norm = nn.Identity()
         self.classifier = nn.Linear(hidden_size, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
@@ -232,12 +247,34 @@ class ViViT_CTC_HF(nn.Module):
         patch_embeddings.image_size = frame_size
         patch_embeddings.num_patches = new_t * new_h * new_w
 
+    def _truncate_vivit(self, feature_layer):
+        """Keep only the first `feature_layer` encoder layers.
+
+        The Kinetics checkpoint concentrates temporal information in its middle
+        layers and folds it into a clip-level summary in the last few, which
+        leaves the final output almost constant over time. Reading an earlier
+        layer gives CTC features that actually change from step to step.
+        """
+        self.feature_layer = feature_layer
+        if feature_layer is None:
+            return
+
+        total = len(self.vivit.encoder.layer)
+        if not 1 <= feature_layer <= total:
+            raise ValueError(
+                f"vivit_feature_layer must be between 1 and {total}, got {feature_layer}"
+            )
+        self.vivit.encoder.layer = self.vivit.encoder.layer[:feature_layer]
+        self.vivit.config.num_hidden_layers = feature_layer
+        self.vivit.layernorm = nn.Identity()
+
     @property
     def output_length(self):
         """Number of CTC time steps emitted, identical for every sample."""
         return self.num_temporal
 
-    def forward(self, x, video_lengths=None):
+    def pool_features(self, x, video_lengths=None):
+        """Per-step features before normalisation and the CTC head: (B, T, D)."""
         # x: (B, C, T_in, H, W)
         x = self.compressor(x, video_lengths)
 
@@ -261,9 +298,11 @@ class ViViT_CTC_HF(nn.Module):
         patches = patches.view(batch_size, self.num_temporal, self.num_spatial, dim)
 
         # Pool away space so CTC runs over time alone
-        pooled = patches.mean(dim=2)  # (B, Tt, D)
+        return patches.mean(dim=2)  # (B, Tt, D)
 
-        logits = self.classifier(pooled)
+    def forward(self, x, video_lengths=None):
+        pooled = self.pool_features(x, video_lengths)
+        logits = self.classifier(self.feature_norm(pooled))
         log_probs = F.log_softmax(logits.float(), dim=2)
 
         # Batch stays on dim 0 so nn.DataParallel gathers replicas correctly.
