@@ -7,6 +7,7 @@ def print_run_summary(config, title):
     print(f"=== {title} ===")
     print(f"Model type: {getattr(config, 'model_type', 'unknown')}")
     print(f"Device: {config.device}")
+    print(f"Dataset CSV: {config.csv_path}")
 
     print(f"Batch size: {config.batch_size}")
     print(f"Gradient accumulation steps: {config.gradient_accumulation_steps}")

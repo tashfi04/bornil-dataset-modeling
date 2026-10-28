@@ -101,6 +101,7 @@ class BdSLDataset(Dataset):
 
         self.valid_indices = self._build_valid_indices()
         self._apply_subset()
+        self._check_cache_complete()
 
         logger.info(f"Initialized {mode} dataset with {len(self.valid_indices)} valid samples (out of {len(self.df)})")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
@@ -124,6 +125,23 @@ class BdSLDataset(Dataset):
             f"{self.mode}: restricted to a fixed subset of {size} samples "
             f"(remove {self.mode}_subset_size from the config for the full split)"
         )
+
+    def _check_cache_complete(self):
+        """Fail at startup if the cache is missing clips, not midway through an epoch."""
+        if self.cache_root is None:
+            return
+        missing = [
+            self.df.iloc[idx]['recording'] for idx in self.valid_indices
+            if not os.path.exists(self._source_path(self.df.iloc[idx]))
+        ]
+        if missing:
+            message = (f"{self.mode}: {len(missing)} of {len(self.valid_indices)} clips "
+                       f"are missing from the cache at {self.cache_root} (first: "
+                       f"{missing[0]}). Build it with scripts/preprocess_cache_frames.py, "
+                       f"or unset cached_frames_path.")
+            if self.strict:
+                raise RuntimeError(message)
+            logger.warning(message)
 
     def _load_approved_samples(self):
         """Read the valid-sample list written by scripts/validate_dataset.py."""
@@ -371,6 +389,15 @@ def get_data_loaders(config):
 
     with open(split_file, 'r', encoding='utf-8') as f:
         split_mapping = json.load(f)
+
+    # A recording missing from the split file would silently belong to no split
+    unassigned = int((~df['recording'].isin(split_mapping.keys())).sum())
+    if unassigned:
+        message = (f"{unassigned} of {len(df)} recordings in {config.csv_path} are not "
+                   f"in {split_file}, so they would be left out of every split.")
+        if getattr(config, 'strict_data', True):
+            raise RuntimeError(message + " Regenerate the split or fix the CSV.")
+        logger.warning(message)
 
     # Split the data based on saved mapping
     train_df = df[df['recording'].isin([k for k, v in split_mapping.items() if v == 'train'])]

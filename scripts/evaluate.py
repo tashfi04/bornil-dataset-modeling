@@ -32,8 +32,15 @@ from src.utils.text_utils import label_fingerprint_problem
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained checkpoint")
     parser.add_argument('--model', choices=['vivit', 'cnn_bilstm'], default='vivit')
-    parser.add_argument('--config', choices=['prod', 'test', 'overfit'], default='prod',
+    parser.add_argument('--config', choices=['prod', 'test', 'overfit', 'subset'],
+                        default='prod',
                         help="Which config variant the checkpoint was trained with")
+    parser.add_argument('--csv', default=None,
+                        help="Dataset CSV (defaults to the config's csv_path)")
+    parser.add_argument('--no-cache', action='store_true',
+                        help="Decode the videos instead of reading the frame cache")
+    parser.add_argument('--frozen-backbone', action='store_true',
+                        help="With --config subset: evaluate the frozen-backbone run")
     parser.add_argument('--split', choices=['test', 'val', 'train'], default='test')
     parser.add_argument('--checkpoint', default=None,
                         help="Checkpoint file (defaults to best_model.pth in the "
@@ -45,11 +52,18 @@ def main():
                         help="Only score this many batches (debugging)")
     args = parser.parse_args()
 
+    if args.frozen_backbone and not (args.model == 'vivit' and args.config == 'subset'):
+        parser.error("--frozen-backbone only applies to --model vivit --config subset")
+
     if args.model == 'vivit':
         if args.config == 'test':
             from configs.test_vivit_ctc_config import config
         elif args.config == 'overfit':
             from configs.overfit_vivit_ctc_config import config
+        elif args.config == 'subset':
+            from configs.subset_vivit_ctc_config import config, use_frozen_backbone
+            if args.frozen_backbone:
+                use_frozen_backbone(config)
         else:
             from configs.vivit_ctc_config import config
         from src.training.vivit_trainer import ViViTTrainer as Trainer
@@ -62,6 +76,10 @@ def main():
 
     # Never resume inside an evaluation run; the checkpoint is loaded explicitly
     config.auto_resume = False
+    if args.csv:
+        config.csv_path = args.csv
+    if args.no_cache:
+        config.cached_frames_path = None
 
     print(f"=== EVALUATION ===")
     print(f"Model: {args.model} ({args.config} config)   split: {args.split}")

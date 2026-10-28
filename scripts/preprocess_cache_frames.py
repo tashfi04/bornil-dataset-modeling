@@ -13,7 +13,8 @@ Then, if the projection fits your storage budget:
     python scripts/preprocess_cache_frames.py --out /kaggle/working/frame_cache
 
 Tune size with --frames / --size / --quality. Defaults follow the ViViT config;
-add --config test to use the Kaggle test config instead.
+add --config test or --config subset to use those configs instead, and --csv to
+read a different CSV.
 """
 import os
 import sys
@@ -87,10 +88,13 @@ def human(num_bytes):
 
 def main():
     parser = argparse.ArgumentParser(description="Cache pre-sampled video frames")
-    parser.add_argument('--config', choices=['prod', 'test'], default='prod',
+    parser.add_argument('--config', choices=['prod', 'test', 'subset'], default='prod',
                         help="ViViT config whose paths and frame settings to use")
+    parser.add_argument('--csv', default=None,
+                        help="Dataset CSV (defaults to the config's csv_path)")
     parser.add_argument('--out', default=None,
-                        help="Cache root directory (defaults to data/frame_cache)")
+                        help="Cache root directory (defaults to the config's "
+                             "cached_frames_path, else data/frame_cache)")
     parser.add_argument('--frames', type=int, default=None,
                         help="Frames to keep per video (defaults to the config's)")
     parser.add_argument('--size', type=int, default=None,
@@ -109,10 +113,15 @@ def main():
 
     if args.config == 'test':
         from configs.test_vivit_ctc_config import config
+    elif args.config == 'subset':
+        from configs.subset_vivit_ctc_config import config
     else:
         from configs.vivit_ctc_config import config
 
-    args.out = args.out or os.path.join(config.repo_root, 'data', 'frame_cache')
+    if args.csv:
+        config.csv_path = args.csv
+    args.out = (args.out or getattr(config, 'cached_frames_path', None)
+                or os.path.join(config.repo_root, 'data', 'frame_cache'))
     args.frames = args.frames or config.num_frames
     args.size = args.size or config.frame_size[0]
     size = (args.size, args.size)
