@@ -30,6 +30,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loader import sample_frames
 from src.utils.frame_cache import cache_path, encode_frames
+from src.utils.environment import check_environment
 
 # Each worker is already a separate process, so keep OpenCV single-threaded
 cv2.setNumThreads(0)
@@ -110,6 +111,7 @@ def main():
     parser.add_argument('--overwrite', action='store_true',
                         help="Re-encode clips that are already cached")
     args = parser.parse_args()
+    check_environment()
 
     if args.config == 'test':
         from configs.test_vivit_ctc_config import config

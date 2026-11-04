@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.utils.video_stats import (
     covered_recordings, load_video_stats, save_video_stats, scan_videos, summarize,
 )
+from src.utils.environment import check_environment
 
 
 def main():
@@ -36,6 +37,7 @@ def main():
     parser.add_argument('--limit', type=int, default=None,
                         help="Only scan the first N rows")
     args = parser.parse_args()
+    check_environment()
 
     if args.config == 'test':
         from configs.test_vivit_ctc_config import config

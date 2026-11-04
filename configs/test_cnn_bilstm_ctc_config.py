@@ -20,8 +20,8 @@ class TestCNNBiLSTMConfig:
     metrics_interval = 1  # short run, so report metrics every epoch
 
     # Paths
-    csv_path = "/kaggle/input/bornil-bdsl-video-dataset/video_data.csv"
-    chunk_base_path = "/kaggle/input/bornil-bdsl-video-dataset"
+    csv_path = "/kaggle/input/datasets/tashfi04/bornil-bdsl-video-dataset/video_data.csv"
+    chunk_base_path = "/kaggle/input/datasets/tashfi04/bornil-bdsl-video-dataset"
 
     # Written outside the repo so re-cloning does not delete the checkpoints.
     # Kaggle still discards this when a session ends unless the version is saved.

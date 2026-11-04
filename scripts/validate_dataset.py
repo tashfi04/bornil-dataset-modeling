@@ -30,6 +30,7 @@ from src.utils.text_utils import (
 )
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit, required_ctc_steps
 from src.utils.video_stats import load_video_stats, summarize
+from src.utils.environment import check_environment
 
 
 def target_ids(text, tokenization, tokenizer, char_to_id):
@@ -52,6 +53,7 @@ def main():
     parser.add_argument('--limit', type=int, default=None,
                         help="Only check the first N rows (debugging)")
     args = parser.parse_args()
+    check_environment()
 
     if args.model == 'vivit' and args.config == 'test':
         from configs.test_vivit_ctc_config import config

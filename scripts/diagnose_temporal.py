@@ -171,7 +171,8 @@ def main():
     else:
         from configs.vivit_ctc_config import config
     from src.training.vivit_trainer import ViViTTrainer
-    from src.utils.text_utils import label_fingerprint_problem
+    from src.utils.text_utils import label_fingerprint_mismatch
+    from src.utils.environment import checkpoint_environment_mismatch
 
     config.auto_resume = False
     trainer = ViViTTrainer(config, log_filename='diagnose.log')
@@ -201,11 +202,14 @@ def main():
         checkpoint = torch.load(checkpoint_path, map_location=device)
         # The temporal measurements do not depend on what each output id means,
         # so a checkpoint from another tokenizer is still worth measuring
-        problem = label_fingerprint_problem(checkpoint, trainer.label_fingerprint,
-                                            checkpoint_path)
-        if problem:
-            print(f"\nWarning: {problem} The feature measurements below are still "
+        mismatch = label_fingerprint_mismatch(checkpoint, trainer.label_fingerprint,
+                                             checkpoint_path)
+        if mismatch:
+            print(f"\nWarning: {mismatch} The feature measurements below are still "
                   f"valid; the token statistics are not.")
+        mismatch = checkpoint_environment_mismatch(checkpoint, trainer.environment, checkpoint_path)
+        if mismatch:
+            print(f"\nWarning: {mismatch}")
         try:
             model.load_state_dict(checkpoint['model_state_dict'])
         except RuntimeError as exc:

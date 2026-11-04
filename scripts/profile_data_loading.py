@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configs.base_config import config
 from src.data_loader import get_data_loaders
+from src.utils.environment import check_environment
 
 def profile_data_loading():
     """Profile each step of the data loading pipeline"""
@@ -53,4 +54,5 @@ def profile_data_loading():
         print(f"Estimated epoch time: {(total_video_time + total_collate_time)/batch_count * len(train_loader)/60:.1f} minutes")
 
 if __name__ == "__main__":
+    check_environment()
     profile_data_loading()

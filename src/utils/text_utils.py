@@ -192,7 +192,7 @@ def label_fingerprint(config):
     blob = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
     return hashlib.sha256(blob).hexdigest()[:16]
 
-def label_fingerprint_problem(checkpoint, expected, path):
+def label_fingerprint_mismatch(checkpoint, expected, path):
     """Explain why a checkpoint does not match the current labels, or return None."""
     saved = checkpoint.get('label_fingerprint')
     if saved is None:

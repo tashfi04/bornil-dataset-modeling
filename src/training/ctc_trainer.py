@@ -6,7 +6,8 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from src.utils.metrics import calculate_all_metrics
-from src.utils.text_utils import label_fingerprint, label_fingerprint_problem
+from src.utils.text_utils import label_fingerprint, label_fingerprint_mismatch
+from src.utils.environment import checkpoint_environment_mismatch
 
 from src.training.base_trainer import BaseTrainer
 
@@ -251,6 +252,7 @@ class CTCTrainer(BaseTrainer):
             'model_type': getattr(self.config, 'model_type', None),
             'num_classes': self.num_classes,
             'label_fingerprint': self.label_fingerprint,
+            'environment': self.environment,
             'training_state': training_state or {},
         }
         if self.scheduler is not None:
@@ -274,6 +276,7 @@ class CTCTrainer(BaseTrainer):
                 'model_type': checkpoint['model_type'],
                 'num_classes': checkpoint['num_classes'],
                 'label_fingerprint': checkpoint['label_fingerprint'],
+                'environment': checkpoint['environment'],
                 'training_state': checkpoint['training_state'],
                 'weights_only': True,
             }, best_path)
@@ -367,11 +370,17 @@ class CTCTrainer(BaseTrainer):
                 f"Checkpoint has {saved_classes} output classes but this run has "
                 f"{self.num_classes}; the tokenizer or vocabulary changed."
             )
-        problem = label_fingerprint_problem(checkpoint, self.label_fingerprint, path)
-        if problem:
+        mismatch = label_fingerprint_mismatch(checkpoint, self.label_fingerprint, path)
+        if mismatch:
             raise RuntimeError(
-                f"{problem} Resuming would continue training against the wrong "
+                f"{mismatch} Resuming would continue training against the wrong "
                 f"targets. Move the old checkpoints aside or set auto_resume=False."
+            )
+        mismatch = checkpoint_environment_mismatch(checkpoint, self.environment, path)
+        if mismatch:
+            raise RuntimeError(
+                f"{mismatch} A run resumed across environments is not reproducible. "
+                f"Use the environment it started in, or move the old checkpoints aside."
             )
 
         state = dict(checkpoint.get('training_state') or {})

@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.text_utils import train_bpe_tokenizer, load_bpe_tokenizer, normalize_text
 from src.utils.ctc_limits import VIVIT_TUBELET_FRAMES
+from src.utils.environment import check_environment
 
 def tokenize(config, vocab_size):
     print("Training BPE Tokenizer")
@@ -84,6 +85,7 @@ def main():
     parser.add_argument("--bpe_vocab_size", type=int, default=None,
                         help="Size of the BPE vocabulary (defaults to the config's)")
     args = parser.parse_args()
+    check_environment()
 
     if args.config == "test":
         from configs.test_vivit_ctc_config import config

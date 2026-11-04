@@ -8,6 +8,8 @@ import argparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.utils.environment import check_environment
+
 def generate_and_save_splits(config):
     """Generate and save train/val/test splits for reuse"""
 
@@ -88,6 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", choices=["prod", "test"], default="prod",
                         help="test reads the dataset from the Kaggle test config's paths")
     args = parser.parse_args()
+    check_environment()
 
     if args.config == "test":
         from configs.test_vivit_ctc_config import config

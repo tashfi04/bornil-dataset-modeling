@@ -2,6 +2,7 @@ import os
 import logging
 import torch
 from abc import ABC, abstractmethod
+from src.utils.environment import check_environment, describe_environment
 
 class BaseTrainer(ABC):
     def __init__(self, config, log_filename='training.log'):
@@ -9,8 +10,10 @@ class BaseTrainer(ABC):
         # do not append to the log of the run that produced it
         self.config = config
         self.log_filename = log_filename
+        self.environment = check_environment()
         self.setup_logging()
         self.setup_directories()
+        self.logger.info(f"Environment: {describe_environment(self.environment)}")
 
     def setup_logging(self):
         """Setup logging configuration"""

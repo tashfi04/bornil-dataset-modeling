@@ -20,6 +20,8 @@ import argparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.utils.environment import check_environment
+
 import torch
 import numpy as np
 
@@ -33,6 +35,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=None,
                         help="Override batch size (use to probe VRAM headroom)")
     args = parser.parse_args()
+    check_environment()
 
     if args.config == 'test':
         from configs.test_vivit_ctc_config import config

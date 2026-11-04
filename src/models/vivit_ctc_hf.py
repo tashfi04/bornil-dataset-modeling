@@ -259,12 +259,24 @@ class ViViT_CTC_HF(nn.Module):
         if feature_layer is None:
             return
 
-        total = len(self.vivit.encoder.layer)
+        # transformers 5 holds the layers on the model itself, 4.x on its encoder
+        if hasattr(self.vivit, 'layers'):
+            owner, attr = self.vivit, 'layers'
+        elif hasattr(self.vivit, 'encoder') and hasattr(self.vivit.encoder, 'layer'):
+            owner, attr = self.vivit.encoder, 'layer'
+        else:
+            raise RuntimeError(
+                "Cannot find the encoder layers on this transformers version's "
+                "VivitModel; cannot truncate to vivit_feature_layer."
+            )
+
+        layers = getattr(owner, attr)
+        total = len(layers)
         if not 1 <= feature_layer <= total:
             raise ValueError(
                 f"vivit_feature_layer must be between 1 and {total}, got {feature_layer}"
             )
-        self.vivit.encoder.layer = self.vivit.encoder.layer[:feature_layer]
+        setattr(owner, attr, layers[:feature_layer])
         self.vivit.config.num_hidden_layers = feature_layer
         self.vivit.layernorm = nn.Identity()
 
