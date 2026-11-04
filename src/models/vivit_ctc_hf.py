@@ -244,8 +244,14 @@ class ViViT_CTC_HF(nn.Module):
         vconf.image_size = frame_size
         patch_embeddings = embeddings.patch_embeddings
         patch_embeddings.num_frames = self.compressed_frames
-        patch_embeddings.image_size = frame_size
         patch_embeddings.num_patches = new_t * new_h * new_w
+        # transformers 5 stores the size as (h, w) on both modules and checks
+        # every input against the copy on the embeddings; 4.x stores an int
+        for module in (patch_embeddings, embeddings):
+            if hasattr(module, 'image_size'):
+                module.image_size = ((frame_size, frame_size)
+                                     if isinstance(module.image_size, (tuple, list))
+                                     else frame_size)
 
     def _truncate_vivit(self, feature_layer):
         """Keep only the first `feature_layer` encoder layers.
