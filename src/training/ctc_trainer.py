@@ -8,12 +8,17 @@ from tqdm import tqdm
 from src.utils.metrics import calculate_all_metrics
 from src.utils.text_utils import label_fingerprint, label_fingerprint_mismatch
 from src.utils.environment import checkpoint_environment_mismatch
+from src.utils.ctc_decoding import collapse
 
 from src.training.base_trainer import BaseTrainer
+
+# Scores that can choose best_model.pth and drive early stopping; lower is better
+SELECTION_METRICS = ('cer', 'wer', 'val_loss')
 
 class CTCTrainer(BaseTrainer):
     def __init__(self, config, log_filename='training.log'):
         super().__init__(config, log_filename)
+        self.selection_metric = self._selection_metric()
         # True for schedulers that advance every optimizer step (e.g. OneCycleLR)
         # rather than once per epoch. setup_optimizer() may override this.
         self.step_scheduler_per_batch = False
@@ -87,6 +92,26 @@ class CTCTrainer(BaseTrainer):
         """Batch count for one epoch, honouring an optional cap."""
         cap = getattr(self.config, config_key, None)
         return min(total, cap) if cap else total
+
+    def _selection_metric(self):
+        """The validation score that picks best_model.pth and drives early stopping.
+
+        CTC validation loss can rise from overconfidence while the decoded output
+        still improves, so a decoded score is the better guide. It has to be
+        measured on val every epoch, which validate() does in the same pass as
+        the loss.
+        """
+        metric = getattr(self.config, 'selection_metric', 'val_loss')
+        if metric not in SELECTION_METRICS:
+            raise ValueError(f"selection_metric must be one of {SELECTION_METRICS}, got {metric!r}")
+        interval = max(1, getattr(self.config, 'metrics_interval', 5))
+        if metric != 'val_loss' and (self._metrics_split() != 'val' or interval != 1):
+            raise ValueError(
+                f"selection_metric={metric!r} needs metrics on the val split every "
+                f"epoch (metrics_split='val', metrics_interval=1), but this config has "
+                f"metrics_split={self._metrics_split()!r}, metrics_interval={interval}. "
+                f"Change those, or set selection_metric='val_loss'.")
+        return metric
 
     def setup_model(self):
         """Setup CTC model - to be implemented by specific model trainers"""
@@ -194,11 +219,15 @@ class CTCTrainer(BaseTrainer):
 
         return avg_loss
 
-    def validate(self, epoch):
-        """Validate model"""
+    def validate(self, epoch, decode=False):
+        """Validation loss, and with `decode` the greedy predictions from the same pass.
+
+        Returns (loss, decoded), where decoded is (targets, predictions) or None.
+        """
         self.model.eval()
         total_loss = 0
         total_samples_this_epoch = 0
+        targets, predictions = [], []
 
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
@@ -233,14 +262,20 @@ class CTCTrainer(BaseTrainer):
                 total_loss += loss.item()
                 pbar.set_postfix({'ValLoss': f'{loss.item():.4f}'})
 
-        return total_loss / batches_run if batches_run else float('inf')
+                if decode:
+                    predictions.extend(self._greedy_texts(outputs, input_lengths))
+                    targets.extend(batch['text_labels'])
 
-    def save_checkpoint(self, epoch, val_loss, is_best=False, training_state=None):
+        loss = total_loss / batches_run if batches_run else float('inf')
+        return loss, ((targets, predictions) if decode else None)
+
+    def save_checkpoint(self, epoch, val_loss, is_best=False, training_state=None, score=None):
         """Write a checkpoint that training can be resumed from.
 
         `last_checkpoint.pth` is overwritten each epoch so an interrupted run can
         continue. Per-epoch copies are opt-in via `keep_epoch_checkpoints`,
-        because each one is several hundred MB and they add up fast.
+        because each one is several hundred MB and they add up fast. `score` is
+        this epoch's value of the selection metric.
         """
         base_model = getattr(self.model, 'module', self.model)
 
@@ -249,6 +284,8 @@ class CTCTrainer(BaseTrainer):
             'model_state_dict': base_model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'val_loss': val_loss,
+            'selection_metric': self.selection_metric,
+            'selection_score': score,
             'model_type': getattr(self.config, 'model_type', None),
             'num_classes': self.num_classes,
             'label_fingerprint': self.label_fingerprint,
@@ -273,6 +310,8 @@ class CTCTrainer(BaseTrainer):
                 'epoch': epoch,
                 'model_state_dict': checkpoint['model_state_dict'],
                 'val_loss': val_loss,
+                'selection_metric': checkpoint['selection_metric'],
+                'selection_score': score,
                 'model_type': checkpoint['model_type'],
                 'num_classes': checkpoint['num_classes'],
                 'label_fingerprint': checkpoint['label_fingerprint'],
@@ -385,6 +424,27 @@ class CTCTrainer(BaseTrainer):
 
         state = dict(checkpoint.get('training_state') or {})
 
+        # Checkpoints from before selection_metric existed chose by val loss
+        saved_metric = state.get('selection_metric', 'val_loss')
+        if saved_metric != self.selection_metric:
+            raise RuntimeError(
+                f"{path} chose its best model by {saved_metric}, but this config "
+                f"selects by {self.selection_metric}, so resuming would compare scores "
+                f"of different kinds. Set selection_metric={saved_metric!r} to continue "
+                f"that run, or move the old checkpoints aside.")
+        if 'best_score' not in state:
+            state['best_score'] = state.get('best_val_loss', float('inf'))
+
+        # Checkpoints from before augmentation existed were trained without it
+        saved_augment = state.get('augment', False)
+        current_augment = bool(getattr(self.config, 'augment', False))
+        if saved_augment != current_augment:
+            raise RuntimeError(
+                f"{path} was trained with augment={str(saved_augment).lower()}, but this run "
+                f"has augment={str(current_augment).lower()}, so resuming would change the "
+                f"recipe partway through. Pass --augment {str(saved_augment).lower()} to "
+                f"continue that run, or move the old checkpoints aside to start a separate one.")
+
         # Unfreezing rebuilds the optimizer with different param groups, so it has
         # to be replayed before the saved optimizer state will load.
         if state.get('backbone_unfrozen'):
@@ -418,21 +478,25 @@ class CTCTrainer(BaseTrainer):
 
     def train(self):
         """Main training loop"""
-        best_val_loss = float('inf')
+        metric = self.selection_metric
+        best_score = float('inf')
         patience_counter = 0
         backbone_unfrozen = False
         start_epoch = 1
+        # Scores during the learning-rate warmup say little about where training
+        # is heading, so early stopping and unfreezing only count epochs after it
+        warmup_epochs = getattr(self.config, 'warmup_epochs', 0)
 
         resume_path = self._resume_checkpoint_path()
         if resume_path:
             state = self.load_checkpoint(resume_path)
             start_epoch = state.get('start_epoch', 1)
-            best_val_loss = state.get('best_val_loss', float('inf'))
+            best_score = state['best_score']
             patience_counter = state.get('patience_counter', 0)
             backbone_unfrozen = state.get('backbone_unfrozen', False)
             self.logger.info(
                 f"Resumed at epoch {start_epoch}/{self.config.num_epochs} "
-                f"(best val loss {best_val_loss:.4f}, patience {patience_counter}, "
+                f"(best {metric} {best_score:.4f}, patience {patience_counter}, "
                 f"backbone_unfrozen={backbone_unfrozen})"
             )
             if start_epoch > self.config.num_epochs:
@@ -448,11 +512,16 @@ class CTCTrainer(BaseTrainer):
             self.logger.info(f"Epoch {epoch}/{self.config.num_epochs}")
 
             train_loss = self.train_epoch(epoch)
-            val_loss = self.validate(epoch)
+            # Val predictions come from the validation pass itself, so scoring
+            # them costs no extra forward pass
+            decode = self._metrics_due(epoch) and self._metrics_split() == 'val'
+            val_loss, decoded = self.validate(epoch, decode=decode)
+            metrics = self.calculate_wer_cer(epoch, decoded)
+            score = val_loss if metric == 'val_loss' else metrics[metric]
 
             # Per-step schedulers already advanced inside train_epoch
             if not self.step_scheduler_per_batch and self.scheduler is not None:
-                self.scheduler.step(val_loss)
+                self.scheduler.step(score)
             groups = self.optimizer.param_groups
             if len(groups) == 1:
                 self.logger.info(f"Learning Rate: {groups[0]['lr']:.2e}")
@@ -460,8 +529,6 @@ class CTCTrainer(BaseTrainer):
                 self.logger.info("Learning Rate: " + ", ".join(
                     f"{g.get('name', i)}={g['lr']:.2e}" for i, g in enumerate(groups)))
 
-            # Calculate metrics (less frequently to save time)
-            metrics = self.calculate_wer_cer(epoch)
             if metrics is not None:
                 self.logger.info(
                     f"Metrics ({self._metrics_split()}) - WER: {metrics['wer']:.4f}, CER: {metrics['cer']:.4f}, "
@@ -474,8 +541,10 @@ class CTCTrainer(BaseTrainer):
                 interval = max(1, getattr(self.config, 'metrics_interval', 5))
                 self.logger.info(f"Metrics calculation skipped this epoch (runs every {interval} epochs)")
 
-            # Unfreeze the pretrained backbone once validation loss plateaus
-            if (not backbone_unfrozen and
+            in_warmup = epoch <= warmup_epochs
+
+            # Unfreeze the pretrained backbone once the selection score plateaus
+            if (not in_warmup and not backbone_unfrozen and
                 patience_counter >= 3 and  # After 3 epochs without improvement
                 self._backbone_frozen_initially()):
 
@@ -484,23 +553,31 @@ class CTCTrainer(BaseTrainer):
                     patience_counter = 0  # Reset patience after unfreezing
 
             # Save checkpoint
-            is_best = val_loss < best_val_loss
+            is_best = score < best_score
             if is_best:
-                best_val_loss = val_loss
+                best_score = score
                 patience_counter = 0
-            else:
+            elif not in_warmup:
                 patience_counter += 1
 
             self.save_checkpoint(epoch, val_loss, is_best, training_state={
-                'best_val_loss': best_val_loss,
+                'selection_metric': metric,
+                'augment': bool(getattr(self.config, 'augment', False)),
+                'best_score': best_score,
                 'patience_counter': patience_counter,
                 'backbone_unfrozen': backbone_unfrozen,
-            })
-            self.logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+            }, score=score)
+            summary = f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            if metric != 'val_loss':
+                summary += f", Val {metric.upper()}: {score:.4f}"
+            self.logger.info(summary + (" (new best)" if is_best else
+                                        f" (best {best_score:.4f}, patience {patience_counter})"))
 
             # Early stopping
             if patience_counter >= self.config.early_stopping_patience:
-                self.logger.info("Early stopping triggered!")
+                self.logger.info(
+                    f"Early stopping triggered: val {metric} has not improved for "
+                    f"{patience_counter} epochs after warmup")
                 break
 
         self._report_checkpoints()
@@ -610,7 +687,7 @@ class CTCTrainer(BaseTrainer):
         self.step_scheduler_per_batch = False
         return True
 
-    def _ids_to_text(self, ids):
+    def ids_to_text(self, ids):
         """Decode CTC-collapsed ids back to text for whichever tokenization is active"""
         if self.tokenization_type == 'bpe':
             from src.utils.text_utils import bpe_ids_to_text
@@ -618,65 +695,92 @@ class CTCTrainer(BaseTrainer):
             return bpe_ids_to_text([int(i) for i in ids], self.tokenizer)
         return ''.join(self.vocab['id_to_char'][str(int(idx))] for idx in ids)
 
+    def _greedy_texts(self, outputs, input_lengths):
+        """Greedy-decode a batch of (B, T, C) outputs over each clip's real steps."""
+        _, max_indices = torch.max(outputs, dim=2)
+        max_indices = max_indices.cpu().numpy()  # (B, T)
+        lengths = input_lengths.cpu().numpy()
+        return [self.ids_to_text(collapse(max_indices[i][:lengths[i]]))
+                for i in range(len(max_indices))]
+
+    # As a decorator, no_grad applies only while the generator itself runs, not
+    # to the caller's code between batches
+    @torch.no_grad()
+    def _batches(self, loader, max_batches=None):
+        """Model outputs over a loader, as (batch, outputs, input_lengths)."""
+        self.model.eval()
+        for batch_idx, batch in enumerate(loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
+
+            batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()}
+
+            with self._autocast():
+                outputs = self.model(batch['videos'], batch['video_lengths'])   # (B, T, C)
+
+            yield batch, outputs, self.get_input_lengths(outputs, batch['video_lengths'])
+
     def decode_loader(self, loader, max_batches=None):
         """Greedy-decode a whole loader. Returns (targets, predictions) as text."""
-        self.model.eval()
         all_predictions = []
         all_targets = []
-
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(loader):
-                if max_batches is not None and batch_idx >= max_batches:
-                    break
-
-                batch = {k: v.to(self.config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
-                        for k, v in batch.items()}
-
-                videos = batch['videos']
-                video_lengths = batch['video_lengths']
-                text_labels = batch['text_labels']
-
-                with self._autocast():
-                    outputs = self.model(videos, video_lengths)   # (B, T, C)
-
-                _, max_indices = torch.max(outputs, dim=2)
-                max_indices = max_indices.cpu().numpy()  # (B, T)
-
-                # Decode only over the model's real CTC time steps
-                input_lengths_np = self.get_input_lengths(outputs, video_lengths).cpu().numpy()
-
-                for i in range(len(max_indices)):
-                    sequence = max_indices[i][:input_lengths_np[i]]
-
-                    # Remove blanks and collapse repeats
-                    decoded = []
-                    previous = None
-                    for idx in sequence:
-                        if idx != 0 and idx != previous:  # 0 is blank token
-                            decoded.append(idx)
-                        previous = idx
-
-                    all_predictions.append(self._ids_to_text(decoded))
-                    all_targets.append(text_labels[i])
-
+        for batch, outputs, input_lengths in self._batches(loader, max_batches):
+            all_predictions.extend(self._greedy_texts(outputs, input_lengths))
+            all_targets.extend(batch['text_labels'])
         return all_targets, all_predictions
+
+    def collect_ctc_outputs(self, loader, max_batches=None, top_k=16):
+        """Run the model over a loader and keep what offline decoding needs.
+
+        For each clip: its reference text, its greedy prediction, and per real
+        time step the blank log-prob plus the top_k likeliest other ids and
+        their log-probs, which is what beam search considers. Also each id's
+        highest log-prob anywhere in the clip, for scoring token detection.
+        """
+        collected = {'targets': [], 'greedy': [], 'blank': [], 'ids': [],
+                     'logprobs': [], 'presence': []}
+        for batch, outputs, input_lengths in self._batches(loader, max_batches):
+            collected['greedy'].extend(self._greedy_texts(outputs, input_lengths))
+            collected['targets'].extend(batch['text_labels'])
+            log_probs = outputs.float()
+            k = min(top_k, log_probs.size(2) - 1)
+            for i, length in enumerate(input_lengths.tolist()):
+                clip = log_probs[i, :length]                    # (T, C)
+                values, indices = clip[:, 1:].topk(k, dim=1)
+                collected['blank'].append(clip[:, 0].cpu())
+                collected['ids'].append((indices + 1).int().cpu())
+                collected['logprobs'].append(values.cpu())
+                collected['presence'].append(clip.max(dim=0).values.cpu())
+        collected['presence'] = torch.stack(collected['presence'])   # (clips, C)
+        return collected
+
+    def _metrics_due(self, epoch):
+        interval = max(1, getattr(self.config, 'metrics_interval', 5))
+        return epoch % interval == 0
 
     def _metrics_split(self):
         """Which split WER/CER are computed on. An overfit check sets 'train'."""
         return getattr(self.config, 'metrics_split', 'val')
 
-    def calculate_wer_cer(self, epoch):
-        """Calculate comprehensive evaluation metrics"""
-        interval = max(1, getattr(self.config, 'metrics_interval', 5))
-        if epoch % interval != 0:
+    def calculate_wer_cer(self, epoch, decoded=None):
+        """Calculate comprehensive evaluation metrics.
+
+        `decoded` is the (targets, predictions) validate() produced this epoch,
+        if it decoded; otherwise the metrics split is decoded here.
+        """
+        if not self._metrics_due(epoch):
             return None
 
         split = self._metrics_split()
-        if split == 'train':
-            loader, cap = self.train_loader, self.train_batches
+        if decoded is not None:
+            all_targets, all_predictions = decoded
         else:
-            loader, cap = self.val_loader, self.val_batches
-        all_targets, all_predictions = self.decode_loader(loader, max_batches=cap)
+            if split == 'train':
+                loader, cap = self.train_loader, self.train_batches
+            else:
+                loader, cap = self.val_loader, self.val_batches
+            all_targets, all_predictions = self.decode_loader(loader, max_batches=cap)
         metrics = calculate_all_metrics(all_targets, all_predictions)
 
         # A few decoded examples, because falling loss alone cannot distinguish

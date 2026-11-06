@@ -57,6 +57,6 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def validate(self, epoch):
+    def validate(self, epoch, decode=False):
         """Validate model - to be implemented by subclasses"""
         pass

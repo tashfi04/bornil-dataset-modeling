@@ -24,6 +24,8 @@ class TestViViTCTCConfig:
     num_epochs = 3
     warmup_epochs = 2
     metrics_interval = 1  # short run, so report metrics every epoch
+    # As in prod, so the test run exercises it
+    augment = True
 
     # Paths
     csv_path = "/kaggle/input/datasets/tashfi04/bornil-bdsl-video-dataset/video_data.csv"

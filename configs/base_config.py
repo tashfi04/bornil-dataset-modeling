@@ -74,8 +74,29 @@ class BaseConfig:
     num_workers = 4
     learning_rate = 1e-4
     num_epochs = 50
+    # Counted in epochs after the learning-rate warmup (warmup_epochs, where a
+    # config has one)
     early_stopping_patience = 10
     grad_clip = 5.0
+
+    # The validation score that picks best_model.pth and drives early stopping:
+    # 'cer', 'wer' or 'val_loss'. CTC validation loss can rise from
+    # overconfidence while the decoded output still improves, so it is a poor
+    # guide. A decoded score needs metrics on val every epoch.
+    selection_metric = 'cer'
+
+    # Augmentation of training clips. Each clip gets one random draw, shared by
+    # all its frames, so the signing stays consistent over time. Never
+    # mirrored: that would swap the signer's dominant hand.
+    augment = False
+    augment_crop_scale = (0.85, 1.0)   # share of the frame area the crop keeps
+    augment_crop_ratio = (0.9, 1.1)    # crop aspect ratio, as width / height
+    augment_brightness = 0.15          # up to +-15%
+    augment_contrast = 0.15            # up to +-15%
+    # Signing speed varied within the clip: it is cut into three segments whose
+    # inner boundaries move by up to this share of a segment, so a stretch can
+    # play up to 30% faster or slower. The frame count stays the same.
+    augment_time_warp = 0.15
 
     # Mixed precision, applied on CUDA only. The CTC loss stays in fp32.
     use_amp = True
@@ -85,7 +106,9 @@ class BaseConfig:
 
     # Logging
     log_interval = 10
-    # How often to run WER/CER, which is expensive
-    metrics_interval = 5
+    # How often to run WER/CER, in epochs. On val the predictions come from the
+    # validation pass itself, so every epoch is cheap; on train (an overfit
+    # check) it costs a separate pass.
+    metrics_interval = 1
 
 config = BaseConfig()

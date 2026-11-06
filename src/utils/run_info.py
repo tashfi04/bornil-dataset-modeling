@@ -30,6 +30,16 @@ def print_run_summary(config, title):
         print(f"  BPE vocab size: {config.bpe_vocab_size}")
         print(f"  Max BPE tokens: {config.max_bpe_tokens} (longer sentences are dropped)")
 
+    print(f"Best checkpoint and early stopping: val {getattr(config, 'selection_metric', 'val_loss')}, "
+          f"patience {config.early_stopping_patience} epochs after "
+          f"{getattr(config, 'warmup_epochs', 0)} warmup epochs")
+    if getattr(config, 'augment', False):
+        print(f"Augmentation: crop scale {config.augment_crop_scale}, ratio "
+              f"{config.augment_crop_ratio}, brightness +-{config.augment_brightness}, "
+              f"contrast +-{config.augment_contrast}, time warp {config.augment_time_warp}")
+    else:
+        print("Augmentation: off")
+
     print(f"Mixed precision: {getattr(config, 'use_amp', False)}")
     print(f"Gradient checkpointing: {getattr(config, 'gradient_checkpointing', False)}")
 

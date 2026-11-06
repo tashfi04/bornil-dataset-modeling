@@ -175,6 +175,8 @@ def main():
     from src.utils.environment import checkpoint_environment_mismatch
 
     config.auto_resume = False
+    # Measured on the clips as recorded, including with --split train
+    config.augment = False
     trainer = ViViTTrainer(config, log_filename='diagnose.log')
     model = getattr(trainer.model, 'module', trainer.model)
     model.eval()

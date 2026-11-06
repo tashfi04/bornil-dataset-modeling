@@ -44,6 +44,9 @@ class OverfitViViTCTCConfig:
     # Validation loss is supposed to get worse as the model memorises, so early
     # stopping would cut the run short at exactly the wrong moment.
     early_stopping_patience = 10 ** 6
+    # Metrics are on train and every 5 epochs, which a decoded score cannot
+    # select from. Nothing is selected here anyway: evaluate last_checkpoint.pth.
+    selection_metric = 'val_loss'
 
     # Paths
     csv_path = "/kaggle/input/datasets/tashfi04/bornil-bdsl-video-dataset/video_data.csv"

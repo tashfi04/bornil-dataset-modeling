@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids, normalize_text
 from src.utils.frame_cache import cache_path, read_cached_frames
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit
+from src.utils.augmentation import augment_clip, check_augmentation
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -89,6 +90,11 @@ class BdSLDataset(Dataset):
         # being dropped, so training never silently proceeds on partial data
         self.strict = bool(getattr(config, 'strict_data', True))
 
+        # Only training clips are augmented; val and test stay as recorded
+        self.augment = mode == 'train' and bool(getattr(config, 'augment', False))
+        if self.augment:
+            check_augmentation(config)
+
         # Recordings cleared by scripts/validate_dataset.py. When present this is
         # the authoritative list and no further filtering happens at runtime.
         self.approved = self._load_approved_samples()
@@ -106,6 +112,11 @@ class BdSLDataset(Dataset):
         logger.info(f"Initialized {mode} dataset with {len(self.valid_indices)} valid samples (out of {len(self.df)})")
         logger.info(f"Using config: {self.config.model_type if hasattr(self.config, 'model_type') else 'base'}")
         logger.info(f"Tokenization type: {self.tokenization_type}")
+        if self.augment:
+            logger.info(
+                f"Augmenting {mode} clips: crop scale {config.augment_crop_scale}, "
+                f"ratio {config.augment_crop_ratio}, brightness +-{config.augment_brightness}, "
+                f"contrast +-{config.augment_contrast}, time warp {config.augment_time_warp}")
 
     def _apply_subset(self):
         """Restrict this split to a fixed random subset, if one is configured.
@@ -244,8 +255,12 @@ class BdSLDataset(Dataset):
         else:  # Default character level tokenization
             text_seq = text_to_int(text_label, self.char_to_id)
 
+        video = torch.FloatTensor(video)
+        if self.augment:
+            video = augment_clip(video, self.config)
+
         return {
-            'video': torch.FloatTensor(video),
+            'video': video,
             # The reference for WER/CER. It must be the normalized text the target
             # ids were built from: NFKC splits য় ড় ঢ় into letter + nukta, so the
             # raw CSV text differs in code points from any correct prediction

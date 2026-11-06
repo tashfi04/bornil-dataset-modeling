@@ -8,6 +8,7 @@ frame cache first:
     python scripts/subset_vivit_ctc.py --csv path/to/subset.csv
     python scripts/subset_vivit_ctc.py --csv path/to/subset.csv --no-cache
     python scripts/subset_vivit_ctc.py --csv path/to/subset.csv --frozen-backbone
+    python scripts/subset_vivit_ctc.py --csv path/to/subset.csv --augment false
 """
 import os
 import sys
@@ -34,6 +35,8 @@ def main():
     parser.add_argument('--frozen-backbone', action='store_true',
                         help="Use the prod config's frozen-backbone recipe; outputs "
                              "go to vivit_ctc_subset_frozen")
+    parser.add_argument('--augment', choices=['true', 'false'], default=None,
+                        help="Augment training clips, overriding the config's setting")
     args = parser.parse_args()
 
     if args.csv:
@@ -42,6 +45,8 @@ def main():
         config.cached_frames_path = None
     if args.frozen_backbone:
         use_frozen_backbone(config)
+    if args.augment:
+        config.augment = args.augment == 'true'
 
     print_run_summary(config, "ViViT-CTC Subset Training")
 

@@ -5,6 +5,7 @@ config.bpe_tokenizer_path to already exist.
 """
 import os
 import sys
+import argparse
 
 os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -19,6 +20,13 @@ from src.utils.run_info import print_run_summary
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train the ViViT-CTC model")
+    parser.add_argument('--augment', choices=['true', 'false'], default=None,
+                        help="Augment training clips, overriding the config's setting")
+    args = parser.parse_args()
+    if args.augment:
+        config.augment = args.augment == 'true'
+
     print_run_summary(config, "ViViT-CTC Training")
 
     if not check_dataset_health(config):

@@ -23,6 +23,9 @@ class ViViTCTCConfig:
     gradient_accumulation_steps = 4  # 1 = no accumulation
     num_epochs = 100
     warmup_epochs = 10
+    # Every sentence is recorded once, so each sign is seen in very few clips.
+    # Varying framing, lighting and signing speed makes them harder to memorise.
+    augment = True
 
     # Video processing
     # 160px yields 3,200 ViViT tokens against 6,272 at 224px, with the same

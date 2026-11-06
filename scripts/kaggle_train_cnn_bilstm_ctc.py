@@ -5,6 +5,7 @@ vocabulary at config.vocab_path to already exist.
 """
 import os
 import sys
+import argparse
 
 os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -18,6 +19,13 @@ from src.data_loader import check_dataset_health
 from src.utils.run_info import print_run_summary
 
 def main():
+    parser = argparse.ArgumentParser(description="Train CNN-BiLSTM-CTC with the Kaggle test config")
+    parser.add_argument('--augment', choices=['true', 'false'], default=None,
+                        help="Augment training clips, overriding the config's setting")
+    args = parser.parse_args()
+    if args.augment:
+        config.augment = args.augment == 'true'
+
     print_run_summary(config, "CNN-BiLSTM-CTC Training (Kaggle test)")
 
     if not check_dataset_health(config):

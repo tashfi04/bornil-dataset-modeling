@@ -221,3 +221,45 @@ def bpe_ids_to_text(ids, tokenizer, blank_id=0):
     # Shift back
     original_ids = [id - 1 for id in ids if id != blank_id]
     return tokenizer.decode(original_ids)
+
+# Language-model files separate units with whitespace, so the space a character
+# model emits is written as the Metaspace marker instead
+LM_SPACE = '\u2581'
+
+def _without_whitespace(unit):
+    """`unit` with any whitespace written as an escape, e.g. a newline as \\u000a."""
+    return ''.join(f"\\u{ord(c):04x}" if c.isspace() else c for c in unit)
+
+def output_units(config):
+    """The unit each CTC output id stands for, as a language model sees it.
+
+    Indexed by output id; the blank (0) maps to None. BPE units are the
+    tokenizer's tokens, characters are themselves with the space as LM_SPACE.
+    Any other whitespace inside a unit is escaped: the current tokenizer was
+    trained on newline-terminated lines and has tokens ending in a newline,
+    which normalized text never produces but the model can still emit.
+    """
+    if getattr(config, 'tokenization_type', 'character') == 'bpe':
+        tokenizer = load_bpe_tokenizer(config.bpe_tokenizer_path)
+        # text_to_bpe_ids shifts ids by +1, so tokenizer id i is output id i + 1
+        units = [None] + [tokenizer.id_to_token(i) for i in range(tokenizer.get_vocab_size())]
+        source = config.bpe_tokenizer_path
+    else:
+        with open(config.vocab_path, 'r', encoding='utf-8') as f:
+            id_to_char = json.load(f)['id_to_char']
+        units = [None] * len(id_to_char)
+        for idx, char in id_to_char.items():
+            if int(idx) == 0:
+                continue
+            if char == LM_SPACE:
+                raise ValueError(f"{config.vocab_path} contains {LM_SPACE!r}, which a language "
+                                 f"model uses to stand for the space")
+            units[int(idx)] = LM_SPACE if char == ' ' else char
+        if any(unit is None for unit in units[1:]):
+            raise ValueError(f"{config.vocab_path} does not number its characters 1..{len(units) - 1}")
+        source = config.vocab_path
+
+    units = [None] + [_without_whitespace(unit) for unit in units[1:]]
+    if len(set(units[1:])) != len(units) - 1:
+        raise ValueError(f"Two units of {source} have the same name once whitespace is escaped")
+    return units

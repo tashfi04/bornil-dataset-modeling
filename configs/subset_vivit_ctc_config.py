@@ -33,6 +33,7 @@ class SubsetViViTCTCConfig:
     num_epochs = 100
     warmup_epochs = 10
     early_stopping_patience = 10
+    augment = True
 
     # Paths. The subset CSV has the same columns as the full one and points at
     # the same videos. scripts/subset_vivit_ctc.py --csv overrides csv_path.
