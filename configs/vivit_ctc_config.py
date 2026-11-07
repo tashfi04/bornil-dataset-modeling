@@ -28,14 +28,12 @@ class ViViTCTCConfig:
     augment = True
 
     # Video processing
-    # 160px yields 4,800 ViViT tokens against 9,408 at 224px, with the same
+    # 160px yields 3,200 ViViT tokens against 6,272 at 224px, with the same
     # number of CTC steps. (224, 224) matches the pretrained resolution exactly.
     # frame_size = (160, 160)
     frame_size = (224, 224)
     num_frames = 160        # frames read from each video
-    # Frames handed to ViViT after compression: 48 CTC steps, so targets of up
-    # to max_bpe_tokens = 48 fit
-    compressed_frames = 96
+    compressed_frames = 64  # frames handed to ViViT after compression
     sampling_strategy = "strategic"
     sampling_segments = 6
 
@@ -45,7 +43,7 @@ class ViViTCTCConfig:
 
     tokenization_type = "bpe"  # or "character"
 
-    # Shared with the Kaggle test config: both compress to 96 frames, so the CTC
+    # Shared with the Kaggle test config: both compress to 64 frames, so the CTC
     # axis and token limit match and the same validated list applies.
     valid_samples_path = os.path.join(base_config.repo_root, "data", "valid_samples_vivit.json")
 

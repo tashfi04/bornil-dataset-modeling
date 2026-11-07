@@ -52,7 +52,7 @@ class SubsetViViTCTCConfig:
     # Video processing, as in the prod config
     frame_size = (224, 224)
     num_frames = 160        # frames read from each video
-    compressed_frames = 96  # frames handed to ViViT after compression
+    compressed_frames = 64  # frames handed to ViViT after compression
     sampling_strategy = "strategic"
     sampling_segments = 6
 

@@ -19,10 +19,9 @@ class BaseConfig:
     bpe_vocab_size = 2000
     # Sentences longer than this are dropped. CTC needs input_length >=
     # target_length and the ViViT-CTC time axis is compressed_frames // 2, so
-    # this must stay at or below that. At a 2000-token vocabulary, 32 tokens
-    # kept about 90% of the sentences and 48 keeps about 98%, including the
-    # long ones a lower limit drops.
-    max_bpe_tokens = 48
+    # this must stay at or below that. 32 tokens keeps about 90% of the
+    # sentences at a 2000-token vocabulary.
+    max_bpe_tokens = 32
 
     # Cache root built by scripts/preprocess_cache_frames.py. Set this to skip
     # video decoding during training; None decodes on the fly.

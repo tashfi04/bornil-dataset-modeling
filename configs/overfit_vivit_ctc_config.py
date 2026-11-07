@@ -64,8 +64,8 @@ class OverfitViViTCTCConfig:
     # Matches the test config, so the position-embedding interpolation path and
     # the CTC axis are the same ones a real run uses.
     frame_size = (160, 160)
-    num_frames = 120
-    compressed_frames = 96
+    num_frames = 80
+    compressed_frames = 64
     sampling_strategy = "strategic"
     sampling_segments = 6
 
