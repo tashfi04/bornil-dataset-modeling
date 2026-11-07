@@ -52,7 +52,7 @@ class SubsetViViTCTCConfig:
     # Video processing, as in the prod config
     frame_size = (224, 224)
     num_frames = 160        # frames read from each video
-    compressed_frames = 64  # frames handed to ViViT after compression
+    compressed_frames = 96  # frames handed to ViViT after compression
     sampling_strategy = "strategic"
     sampling_segments = 6
 
@@ -85,8 +85,9 @@ def use_frozen_backbone(config):
     """Switch to the prod config's recipe, for comparison with full training.
 
     ViViT starts frozen and is unfrozen at a tenth of the learning rate once
-    validation loss plateaus. Outputs go to their own directory, so the two runs
-    never overwrite each other's checkpoints or results.
+    the selection score stops improving after warmup. Outputs go to their own
+    directory, so the two runs never overwrite each other's checkpoints or
+    results.
     """
     config.freeze_backbone = True
     config.trainable_position_embeddings = False

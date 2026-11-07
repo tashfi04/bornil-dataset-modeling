@@ -108,23 +108,39 @@ def int_to_text(int_sequence, id_to_char):
     """Convert integer sequence back to text"""
     return ''.join([id_to_char[idx] for idx in int_sequence if idx in id_to_char])
 
-def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2):
-    """
-    Train a BPE tokenizer on the text column of the CSV
+def train_split_texts(csv_path, split_path):
+    """Normalized train-split sentences, without any that also appear in val or test.
+
+    Returns (texts, heldout, excluded): the training sentences, the set of
+    normalized val and test sentences, and how many train recordings were left
+    out because their sentence is also held out.
     """
     df = pd.read_csv(csv_path)
+    with open(split_path, 'r', encoding='utf-8') as f:
+        split = json.load(f)
+    df['split'] = df['recording'].map(split)
+    unassigned = int(df['split'].isna().sum())
+    if unassigned:
+        raise RuntimeError(f"{unassigned} of {len(df)} recordings in {csv_path} are not in "
+                           f"{split_path}. Regenerate the split or fix the CSV.")
+    df['norm'] = df['text'].astype(str).map(normalize_text)
 
-    # Normalize all texts using the normalize_text function
-    texts = df['text'].astype(str).apply(normalize_text).tolist()
+    heldout = set(df.loc[df['split'] != 'train', 'norm'])
+    train_texts = df.loc[df['split'] == 'train', 'norm'].tolist()
+    texts = [text for text in train_texts if text not in heldout]
+    return texts, heldout, len(train_texts) - len(texts)
 
-    # Written next to the output file, since the working directory is not
-    # always the repo root
+def train_bpe_tokenizer(csv_path, split_path, output_path, vocab_size=1000, min_frequency=2):
+    """Train the BPE tokenizer on the train split's sentences and save it.
+
+    Val and test sentences are left out, and so are train sentences that also
+    appear in them, so the vocabulary and merges never see held-out text.
+    Returns the tokenizer and a summary of what it was trained on.
+    """
+    texts, heldout, excluded = train_split_texts(csv_path, split_path)
+
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
-    temp_file = os.path.join(output_dir, "temp_texts_for_bpe.txt")
-    with open(temp_file, "w", encoding="utf-8") as f:
-        for t in texts:
-            f.write(t + "\n")
 
     # Initialize BPE tokenizer
     tokenizer = Tokenizer(models.BPE())
@@ -142,25 +158,43 @@ def train_bpe_tokenizer(csv_path, output_path, vocab_size=1000, min_frequency=2)
         special_tokens=[] # No special tokens, then after encoding, add 1 to shift index to 1..N, leaving 0 for blank
     )
 
-    tokenizer.train([temp_file], trainer)
+    # From the sentences themselves: training from a one-sentence-per-line file
+    # kept each line's newline as text, and 108 of 2,000 tokens ended in one, so
+    # they could never occur in a target
+    tokenizer.train_from_iterator(texts, trainer=trainer, length=len(texts))
 
-    # Clean up temp file
-    os.remove(temp_file)
+    # Normalized text has no whitespace but the spaces Metaspace turns into its
+    # word marker, so any other whitespace in a token is a wasted id
+    spaced = [token for token in tokenizer.get_vocab() if any(c.isspace() for c in token)]
+    if spaced:
+        raise RuntimeError(f"{len(spaced)} BPE tokens contain whitespace (first: {spaced[:5]!r}), "
+                           f"so they can never occur in a normalized sentence.")
 
     # Decoding is what WER and CER are computed on, so a tokenizer that cannot
     # round-trip its own training text would make every reported score wrong
-    failures = [t for t in texts[:2000] if tokenizer.decode(tokenizer.encode(t).ids) != t]
+    failures = [t for t in texts if tokenizer.decode(tokenizer.encode(t).ids) != t]
     if failures:
         raise RuntimeError(
-            f"BPE tokenizer does not round-trip {len(failures)} of 2000 sentences; "
-            f"first mismatch: {failures[0]!r} -> "
+            f"BPE tokenizer does not round-trip {len(failures)} of {len(texts)} training "
+            f"sentences; first mismatch: {failures[0]!r} -> "
             f"{tokenizer.decode(tokenizer.encode(failures[0]).ids)!r}")
 
-    # Save tokenizer
+    # BPE has no unknown token, so a character that never occurs in training
+    # has no id, and a held-out sentence containing it cannot be reproduced
+    known = set(''.join(texts))
+    unseen = Counter(char for text in heldout for char in set(text) - known)
+    lossy = sum(1 for t in heldout if tokenizer.decode(tokenizer.encode(t).ids) != t)
+
     tokenizer.save(output_path)
 
     print(f"BPE tokenizer saved to {output_path} with vocab size {tokenizer.get_vocab_size()}")
-    return tokenizer
+    return tokenizer, {
+        'train_sentences': len(texts),
+        'excluded_heldout': excluded,
+        'heldout_sentences': len(heldout),
+        'unseen_chars': dict(unseen.most_common()),
+        'heldout_not_reproducible': lossy,
+    }
 
 def load_bpe_tokenizer(tokenizer_path):
     """Load saved BPE tokenizer"""

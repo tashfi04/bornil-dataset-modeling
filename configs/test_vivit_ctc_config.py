@@ -41,12 +41,13 @@ class TestViViTCTCConfig:
     max_train_batches = 200
     max_val_batches = 50
 
-    # Fewer frames read than production for faster decoding, but the same
-    # compressed_frames so the position-embedding interpolation path and the
-    # CTC axis match the real run.
+    # Fewer frames read than production for faster decoding, but still more
+    # than compressed_frames, and the same compressed_frames, so compression,
+    # the position-embedding interpolation path and the CTC axis match the real
+    # run.
     frame_size = (160, 160)
-    num_frames = 80
-    compressed_frames = 64
+    num_frames = 120
+    compressed_frames = 96
     sampling_strategy = "strategic"
     sampling_segments = 6
 

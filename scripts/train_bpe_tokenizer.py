@@ -1,3 +1,16 @@
+"""Train the BPE tokenizer and report sentence lengths in its tokens.
+
+The tokenizer learns from the train split's sentences only. Val and test
+sentences are left out, and so are train sentences that also appear in them.
+The length statistics cover every sentence in the CSV, because the token limit
+applies to all splits.
+
+    python scripts/train_bpe_tokenizer.py --bpe_vocab_size 2000
+
+A new tokenizer changes what every output id means, so afterwards re-run
+scripts/validate_dataset.py --model vivit and scripts/train_ngram_lm.py.
+Checkpoints trained with the old tokenizer are refused from then on.
+"""
 import os
 import sys
 import argparse
@@ -15,7 +28,19 @@ def tokenize(config, vocab_size):
     # Train tokenizer
     output_path = config.bpe_tokenizer_path
 
-    train_bpe_tokenizer(config.csv_path, output_path, vocab_size=vocab_size)
+    _, summary = train_bpe_tokenizer(config.csv_path, config.train_val_test_split_path,
+                                     output_path, vocab_size=vocab_size)
+    print(f"Trained on {summary['train_sentences']} train-split sentences; "
+          f"{summary['excluded_heldout']} train recordings were left out because their "
+          f"sentence also appears in val or test")
+    if summary['unseen_chars']:
+        chars = ', '.join(f"{char!r} (in {count})" for char, count in summary['unseen_chars'].items())
+        print(f"Characters in val/test sentences that training never saw: {chars}. "
+              f"{summary['heldout_not_reproducible']} of {summary['heldout_sentences']} distinct "
+              f"val/test sentences cannot be reproduced exactly, since the model has no "
+              f"token for these characters.")
+    else:
+        print("Every character in the val and test sentences also occurs in training")
 
     # Load the trained tokenizer to analyze token counts
     tokenizer = load_bpe_tokenizer(output_path)
