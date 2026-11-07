@@ -20,7 +20,8 @@ test unchanged:
 
 Every run also reports token detection (src/utils/token_detection.py): whether
 the model's output can tell which tokens a clip contains, which shows what a
-model has learned even when it decodes to almost nothing.
+model has learned even when it decodes to almost nothing. It also rescores the
+predictions against other clips' sentences, as a floor that needs no video.
 
 Results sit with the model's other outputs, e.g. for the overfit config:
 
@@ -32,6 +33,7 @@ Results sit with the model's other outputs, e.g. for the overfit config:
 import os
 import sys
 import json
+import random
 import argparse
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -97,11 +99,26 @@ def reference_ids(trainer, texts):
     return [text_to_int(text, trainer.vocab['char_to_id']) for text in texts]
 
 
+def shuffled_references(targets, seed=0):
+    """The references reassigned along a random cycle, so no clip keeps its own."""
+    order = list(range(len(targets)))
+    random.Random(seed).shuffle(order)
+    shuffled = list(targets)
+    for k, clip in enumerate(order):
+        shuffled[clip] = targets[order[(k + 1) % len(order)]]
+    return shuffled
+
+
 def tune_lm(trainer, steps, targets, search, workers):
-    """Try every LM weight and insertion bonus in the grid; return them by val CER."""
+    """Try every LM weight and insertion bonus in the grid; return them by val WER.
+
+    Not by CER: when the model is mostly guessing, longer guesses share more
+    common letters with the reference by chance, so the largest insertion bonus
+    always wins on CER without recognising anything more.
+    """
     tried = []
     print(f"\nTuning on {len(steps)} val clips: {len(LM_WEIGHTS)} LM weights x "
-          f"{len(INSERTION_BONUSES)} insertion bonuses, by CER")
+          f"{len(INSERTION_BONUSES)} insertion bonuses, by WER")
     for lm_weight in LM_WEIGHTS:
         for insertion_bonus in INSERTION_BONUSES:
             ids = beam_search_all(steps, workers, lm_weight=lm_weight,
@@ -111,8 +128,8 @@ def tune_lm(trainer, steps, targets, search, workers):
                           'cer': compute_cer(targets, predictions),
                           'wer': compute_wer(targets, predictions)})
             print(f"  weight {lm_weight:<4} bonus {insertion_bonus:<4} "
-                  f"CER {tried[-1]['cer']:.4f}  WER {tried[-1]['wer']:.4f}")
-    return sorted(tried, key=lambda t: t['cer'])
+                  f"WER {tried[-1]['wer']:.4f}  CER {tried[-1]['cer']:.4f}")
+    return sorted(tried, key=lambda t: (t['wer'], t['cer']))
 
 
 def print_metrics(columns):
@@ -159,7 +176,7 @@ def main():
     parser.add_argument('--insertion-bonus', type=float, default=None,
                         help="Score added per emitted unit; use the value --tune-lm chose on val")
     parser.add_argument('--tune-lm', action='store_true',
-                        help="Choose --lm-weight and --insertion-bonus on val by CER")
+                        help="Choose --lm-weight and --insertion-bonus on val by WER")
     parser.add_argument('--workers', type=int, default=min(4, os.cpu_count() or 1),
                         help="Processes for beam search")
     args = parser.parse_args()
@@ -268,7 +285,7 @@ def main():
             tuning = tune_lm(trainer, steps, targets, search, args.workers)
             lm_weight, insertion_bonus = tuning[0]['lm_weight'], tuning[0]['insertion_bonus']
             print(f"Best on val: --lm-weight {lm_weight} --insertion-bonus {insertion_bonus} "
-                  f"(CER {tuning[0]['cer']:.4f}). Score test with these values, the same "
+                  f"(WER {tuning[0]['wer']:.4f}). Score test with these values, the same "
                   f"--lm and your other options, and without --tune-lm.")
         else:
             lm_weight = args.lm_weight if args.lm else 0.0
@@ -301,6 +318,22 @@ def main():
     if empty == len(predictions):
         print("  Every prediction is empty, which is what CTC collapsing to all-blank"
               " looks like. WER near 1.0 here means the model is not emitting tokens.")
+
+    # The same predictions against other clips' sentences. A model that uses
+    # the video scores far worse here; one that ignores it scores about the same.
+    shuffled_control = None
+    if len(targets) > 1:
+        shuffled = shuffled_references(targets)
+        decoded = {'greedy': greedy}
+        if decoder == 'beam':
+            decoded['beam + LM' if lm else 'beam'] = predictions
+        shuffled_control = {name: {'wer': compute_wer(shuffled, texts),
+                                   'cer': compute_cer(shuffled, texts)}
+                            for name, texts in decoded.items()}
+        print("\nThe same predictions scored against other clips' sentences:")
+        for name, scores in shuffled_control.items():
+            print(f"  {name:<10} WER {scores['wer']:.4f}  CER {scores['cer']:.4f}")
+        print("  Scores close to the real ones mean the output barely depends on the video.")
 
     # Which tokens the output can detect, whatever the decoder makes of it
     names = output_units(config)
@@ -344,6 +377,7 @@ def main():
         'decoder': settings,
         'metrics': metrics,
         'token_detection': detection,
+        'shuffled_control': shuffled_control,
     }
     if decoder == 'beam':
         results['greedy_metrics'] = greedy_metrics
