@@ -8,6 +8,7 @@ this for the pretrained weights and for a trained checkpoint, on the same clips.
     python scripts/diagnose_temporal.py
     python scripts/diagnose_temporal.py --checkpoint path/to/last_checkpoint.pth
     python scripts/diagnose_temporal.py --config test --split val
+    python scripts/diagnose_temporal.py --config subset --csv path/to/subset.csv --split val
 """
 import os
 import sys
@@ -155,7 +156,10 @@ def report(label, m):
 
 def main():
     parser = argparse.ArgumentParser(description="Locate temporal information loss")
-    parser.add_argument('--config', choices=['overfit', 'test', 'prod'], default='overfit')
+    parser.add_argument('--config', choices=['overfit', 'test', 'prod', 'subset'],
+                        default='overfit')
+    parser.add_argument('--csv', default=None,
+                        help="Dataset CSV (defaults to the config's csv_path)")
     parser.add_argument('--split', choices=['train', 'val'], default='train')
     parser.add_argument('--checkpoint', default=None,
                         help="Trained checkpoint (defaults to last_checkpoint.pth "
@@ -168,6 +172,8 @@ def main():
         from configs.overfit_vivit_ctc_config import config
     elif args.config == 'test':
         from configs.test_vivit_ctc_config import config
+    elif args.config == 'subset':
+        from configs.subset_vivit_ctc_config import config
     else:
         from configs.vivit_ctc_config import config
     from src.training.vivit_trainer import ViViTTrainer
@@ -177,6 +183,8 @@ def main():
     config.auto_resume = False
     # Measured on the clips as recorded, including with --split train
     config.augment = False
+    if args.csv:
+        config.csv_path = args.csv
     trainer = ViViTTrainer(config, log_filename='diagnose.log')
     model = getattr(trainer.model, 'module', trainer.model)
     model.eval()
