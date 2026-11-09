@@ -484,7 +484,10 @@ class CTCTrainer(BaseTrainer):
         backbone_unfrozen = False
         start_epoch = 1
         # Scores during the learning-rate warmup say little about where training
-        # is heading, so early stopping and unfreezing only count epochs after it
+        # is heading, so the best checkpoint, early stopping and unfreezing only
+        # count epochs after it. A warmup epoch can still score well by chance,
+        # e.g. one generic word for every clip, and would otherwise set the bar
+        # every later epoch has to beat.
         warmup_epochs = getattr(self.config, 'warmup_epochs', 0)
 
         resume_path = self._resume_checkpoint_path()
@@ -494,6 +497,13 @@ class CTCTrainer(BaseTrainer):
             best_score = state['best_score']
             patience_counter = state.get('patience_counter', 0)
             backbone_unfrozen = state.get('backbone_unfrozen', False)
+            # Checkpoints written before warmup epochs stopped counting can carry
+            # a best score from inside the warmup
+            if start_epoch - 1 <= warmup_epochs and best_score != float('inf'):
+                self.logger.info(
+                    f"Ignoring the checkpoint's best {metric} {best_score:.4f}: it was "
+                    f"set during the warmup, which no longer picks the best checkpoint")
+                best_score = float('inf')
             self.logger.info(
                 f"Resumed at epoch {start_epoch}/{self.config.num_epochs} "
                 f"(best {metric} {best_score:.4f}, patience {patience_counter}, "
@@ -553,7 +563,7 @@ class CTCTrainer(BaseTrainer):
                     patience_counter = 0  # Reset patience after unfreezing
 
             # Save checkpoint
-            is_best = score < best_score
+            is_best = not in_warmup and score < best_score
             if is_best:
                 best_score = score
                 patience_counter = 0
@@ -570,8 +580,13 @@ class CTCTrainer(BaseTrainer):
             summary = f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
             if metric != 'val_loss':
                 summary += f", Val {metric.upper()}: {score:.4f}"
-            self.logger.info(summary + (" (new best)" if is_best else
-                                        f" (best {best_score:.4f}, patience {patience_counter})"))
+            if is_best:
+                summary += " (new best)"
+            elif in_warmup:
+                summary += " (warmup, not a best-checkpoint candidate)"
+            else:
+                summary += f" (best {best_score:.4f}, patience {patience_counter})"
+            self.logger.info(summary)
 
             # Early stopping
             if patience_counter >= self.config.early_stopping_patience:
