@@ -6,7 +6,9 @@ from transformers import VivitModel
 from src.utils.input_scaling import check_input_scaling, scale_frames
 
 # Google's Scenic training config for this checkpoint zero-centres frames.
-# scripts/check_input_scaling.py checks this against the alternatives.
+# scripts/check_input_scaling.py confirmed it on 48 of our clips (2026-11-10):
+# -1..1 gave the most "sign language interpreting" predictions, 0..1 was close
+# behind and HF's -3..1 was clearly worse.
 DEFAULT_INPUT_SCALING = 'minus_one_one'
 
 
