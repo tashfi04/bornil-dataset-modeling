@@ -4,8 +4,7 @@ Frames leave the data loader as floats in 0..1, and augmentation and ViViT's
 temporal compressor work in that range. A pretrained backbone was trained on
 one particular scaling, so each model applies it just before the backbone:
 
-- 'zero_one': unchanged, 0..1. Every run before 2026-11-09 used this, which
-  matched neither backbone's pretraining.
+- 'zero_one': unchanged, 0..1. Matches neither backbone's pretraining.
 - 'minus_one_one': 2x - 1, so -1..1. Google's Scenic config for the ViViT
   Kinetics-400 checkpoints sets zero_centering.
 - 'hf_vivit': 4x - 3, so -3..1. Hugging Face's ViViT image processor produces

@@ -346,19 +346,20 @@ def main():
     # Which tokens the output can detect, whatever the decoder makes of it
     names = output_units(config)
     presence = collected['presence']
+    min_clips = getattr(config, 'detection_min_clips', DETECTION_MIN_CLIPS)
     detection = token_detection(reference_ids(trainer, targets),
                                 lambda token: presence[:, token].tolist(),
-                                min_examples=DETECTION_MIN_CLIPS)
+                                min_examples=min_clips)
     if detection is None:
-        print(f"\nToken detection: no token is in at least {DETECTION_MIN_CLIPS} clips and "
-              f"missing from {DETECTION_MIN_CLIPS}, so there is nothing to score.")
+        print(f"\nToken detection: no token is in at least {min_clips} clips and "
+              f"missing from {min_clips}, so there is nothing to score.")
     else:
         detection['per_token'] = sorted(
             ({'id': token, 'unit': names[token], **scores}
              for token, scores in detection['per_token'].items()),
             key=lambda entry: entry['auc'], reverse=True)
         print(f"\nToken detection, over the {detection['tokens_scored']} tokens in at least "
-              f"{DETECTION_MIN_CLIPS} clips and missing from {DETECTION_MIN_CLIPS}:")
+              f"{min_clips} clips and missing from {min_clips}:")
         print(f"  mean AUC {detection['mean_auc']:.3f} (chance 0.5; sentence length "
               f"alone gives {detection['mean_length_auc']:.3f})")
         print(f"  {detection['tokens_beating_length']} of {detection['tokens_scored']} tokens "

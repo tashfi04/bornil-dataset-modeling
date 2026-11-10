@@ -26,6 +26,10 @@ class SubsetViViTCTCConfig:
     # below switches to that recipe for comparison.
     freeze_backbone = False
 
+    # The vocabulary-based subset (scripts/make_vocab_subset.py) has short val
+    # sentences, so few tokens appear in 10 val clips
+    detection_min_clips = 5
+
     # Training, as in the prod config
     learning_rate = 5e-5
     batch_size = 4

@@ -3,8 +3,8 @@
 The Kinetics-400 checkpoint was trained on one input scaling, and two
 candidates fit what is published about it (src/utils/input_scaling.py). This
 passes the same clips through the complete pretrained model, Kinetics
-classifier included, at each candidate and at the 0..1 that every run before
-2026-11-09 used. Nothing is trained or saved.
+classifier included, at each candidate and at plain 0..1. Nothing is trained
+or saved.
 
 Every clip shows one person signing to a camera, so at the scaling the model
 was trained on its predictions should be confident and mostly agree across
@@ -16,7 +16,7 @@ spread over the whole clip (pretraining used 32 consecutive frames at stride
 center-cropped. So absolute confidence is lower than on Kinetics; only the
 comparison between scalings matters.
 
-    python scripts/check_input_scaling.py --config subset --csv /kaggle/working/subset.csv
+    python scripts/check_input_scaling.py --config subset --csv path/to/subset.csv
 """
 import os
 import sys

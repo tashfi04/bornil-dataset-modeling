@@ -49,6 +49,10 @@ class BaseConfig:
     # kept by default. Enable to also keep one file per epoch, and cap how many
     # of those are retained.
     keep_epoch_checkpoints = False
+
+    # Token detection (trainer log and evaluate.py) scores a token only if at
+    # least this many clips contain it and this many lack it; fewer gives noise
+    detection_min_clips = 10
     max_epoch_checkpoints = 3
 
     train_val_test_split_path = os.path.join(repo_root, "data", "train_val_test_split.json")

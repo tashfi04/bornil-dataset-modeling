@@ -289,8 +289,11 @@ class CTCTrainer(BaseTrainer):
         loss = total_loss / batches_run if batches_run else float('inf')
         return loss, ((targets, predictions) if decode else None)
 
-    @staticmethod
-    def _token_detection(presence, references):
+    def _detection_min_clips(self):
+        """A token is scored only if at least this many clips have it and lack it."""
+        return getattr(self.config, 'detection_min_clips', 10)
+
+    def _token_detection(self, presence, references):
         """Token detection over the clips validate() saw, or None if too few.
 
         The same measure evaluate.py reports: it shows whether the output
@@ -299,14 +302,16 @@ class CTCTrainer(BaseTrainer):
         if not presence:
             return None
         matrix = torch.stack(presence)   # (clips, C)
-        return token_detection(references, lambda token: matrix[:, token].tolist())
+        return token_detection(references, lambda token: matrix[:, token].tolist(),
+                               min_examples=self._detection_min_clips())
 
     def _log_token_detection(self):
         detection = self.val_detection
         if detection is None:
+            n = self._detection_min_clips()
             self.logger.info(
-                "Token detection (val): no token is in at least 10 clips and missing "
-                "from 10, so there is nothing to score")
+                f"Token detection (val): no token is in at least {n} clips and missing "
+                f"from {n}, so there is nothing to score")
             return
         self.logger.info(
             f"Token detection (val): mean AUC {detection['mean_auc']:.3f} over "
