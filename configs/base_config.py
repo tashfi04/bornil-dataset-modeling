@@ -85,6 +85,13 @@ class BaseConfig:
     # guide. A decoded score needs metrics on val every epoch.
     selection_metric = 'cer'
 
+    # Pixel scaling applied just before the pretrained backbone (frames are 0..1
+    # until then). None means the backbone's own pretraining scaling: ViViT
+    # 'minus_one_one', CNN-BiLSTM 'imagenet'. Options and reasons are in
+    # src/utils/input_scaling.py. Checkpoints record it, and resuming with a
+    # different one is refused.
+    input_scaling = None
+
     # Augmentation of training clips. Each clip gets one random draw, shared by
     # all its frames, so the signing stays consistent over time. Never
     # mirrored: that would swap the signer's dominant hand.

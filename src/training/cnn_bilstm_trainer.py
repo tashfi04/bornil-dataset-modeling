@@ -13,7 +13,8 @@ class CNNBiLSTMTrainer(CTCTrainer):
             lstm_hidden_size=self.config.lstm_hidden_size,
             lstm_layers=self.config.lstm_layers,
             dropout=self.config.dropout,
-            freeze_cnn=self.config.freeze_cnn_initially
+            freeze_cnn=self.config.freeze_cnn_initially,
+            input_scaling=getattr(self.config, 'input_scaling', None)
         )
 
         # Multi-GPU handling

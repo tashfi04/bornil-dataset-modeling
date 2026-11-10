@@ -9,6 +9,8 @@ from src.utils.metrics import calculate_all_metrics
 from src.utils.text_utils import label_fingerprint, label_fingerprint_mismatch
 from src.utils.environment import checkpoint_environment_mismatch
 from src.utils.ctc_decoding import collapse
+from src.utils.input_scaling import model_input_scaling, checkpoint_input_scaling
+from src.utils.token_detection import token_detection
 
 from src.training.base_trainer import BaseTrainer
 
@@ -37,6 +39,10 @@ class CTCTrainer(BaseTrainer):
         self.setup_data()
         self.setup_model()
         self.setup_optimizer()
+        self.logger.info(f"Input scaling: {model_input_scaling(self.model)} "
+                         f"(applied to 0..1 frames just before the backbone)")
+        # Set by every validate(); see _token_detection()
+        self.val_detection = None
 
     def setup_data(self):
         """Setup data loaders for CTC training"""
@@ -228,6 +234,9 @@ class CTCTrainer(BaseTrainer):
         total_loss = 0
         total_samples_this_epoch = 0
         targets, predictions = [], []
+        # Per clip: each id's highest log-prob over its real steps, and its
+        # reference ids, for token detection
+        presence, references = [], []
 
         with torch.no_grad():
             pbar = tqdm(self.val_loader, desc=f'Epoch {epoch:03d} [Val]')
@@ -262,12 +271,48 @@ class CTCTrainer(BaseTrainer):
                 total_loss += loss.item()
                 pbar.set_postfix({'ValLoss': f'{loss.item():.4f}'})
 
+                # One copy to the CPU per batch, not one per clip
+                log_probs = outputs.float().cpu()
+                for i, length in enumerate(input_lengths.tolist()):
+                    presence.append(log_probs[i, :length].max(dim=0).values)
+                flat_targets = text_targets.tolist()
+                offset = 0
+                for length in text_lengths.tolist():
+                    references.append(flat_targets[offset:offset + length])
+                    offset += length
+
                 if decode:
                     predictions.extend(self._greedy_texts(outputs, input_lengths))
                     targets.extend(batch['text_labels'])
 
+        self.val_detection = self._token_detection(presence, references)
         loss = total_loss / batches_run if batches_run else float('inf')
         return loss, ((targets, predictions) if decode else None)
+
+    @staticmethod
+    def _token_detection(presence, references):
+        """Token detection over the clips validate() saw, or None if too few.
+
+        The same measure evaluate.py reports: it shows whether the output
+        depends on the clip even while greedy decoding is still all blank.
+        """
+        if not presence:
+            return None
+        matrix = torch.stack(presence)   # (clips, C)
+        return token_detection(references, lambda token: matrix[:, token].tolist())
+
+    def _log_token_detection(self):
+        detection = self.val_detection
+        if detection is None:
+            self.logger.info(
+                "Token detection (val): no token is in at least 10 clips and missing "
+                "from 10, so there is nothing to score")
+            return
+        self.logger.info(
+            f"Token detection (val): mean AUC {detection['mean_auc']:.3f} over "
+            f"{detection['tokens_scored']} tokens, against {detection['mean_length_auc']:.3f} "
+            f"from sentence length alone; {detection['tokens_beating_length']} of "
+            f"{detection['tokens_scored']} tokens beat length")
 
     def save_checkpoint(self, epoch, val_loss, is_best=False, training_state=None, score=None):
         """Write a checkpoint that training can be resumed from.
@@ -290,6 +335,7 @@ class CTCTrainer(BaseTrainer):
             'num_classes': self.num_classes,
             'label_fingerprint': self.label_fingerprint,
             'environment': self.environment,
+            'input_scaling': model_input_scaling(self.model),
             'training_state': training_state or {},
         }
         if self.scheduler is not None:
@@ -316,6 +362,7 @@ class CTCTrainer(BaseTrainer):
                 'num_classes': checkpoint['num_classes'],
                 'label_fingerprint': checkpoint['label_fingerprint'],
                 'environment': checkpoint['environment'],
+                'input_scaling': checkpoint['input_scaling'],
                 'training_state': checkpoint['training_state'],
                 'weights_only': True,
             }, best_path)
@@ -421,6 +468,17 @@ class CTCTrainer(BaseTrainer):
                 f"{mismatch} A run resumed across environments is not reproducible. "
                 f"Use the environment it started in, or move the old checkpoints aside."
             )
+
+        # Checkpoints from before the setting existed were trained on 0..1 frames
+        saved_scaling = checkpoint_input_scaling(checkpoint)
+        current_scaling = model_input_scaling(self.model)
+        if saved_scaling != current_scaling:
+            raise RuntimeError(
+                f"{path} was trained on frames scaled {saved_scaling!r}, but this run "
+                f"scales them {current_scaling!r}, so resuming would change what the "
+                f"backbone sees partway through. Set input_scaling={saved_scaling!r} in "
+                f"the config to continue that run, or move the old checkpoints aside "
+                f"to start a separate one.")
 
         state = dict(checkpoint.get('training_state') or {})
 
@@ -550,6 +608,7 @@ class CTCTrainer(BaseTrainer):
             else:
                 interval = max(1, getattr(self.config, 'metrics_interval', 5))
                 self.logger.info(f"Metrics calculation skipped this epoch (runs every {interval} epochs)")
+            self._log_token_detection()
 
             in_warmup = epoch <= warmup_epochs
 

@@ -47,6 +47,7 @@ from src.utils.environment import checkpoint_environment_mismatch
 from src.utils.ctc_decoding import beam_search_all
 from src.utils.ngram_lm import read_arpa, metadata_path
 from src.utils.token_detection import token_detection
+from src.utils.input_scaling import checkpoint_input_scaling
 
 # Non-blank ids beam search considers at each time step
 TOKEN_CANDIDATES = 16
@@ -259,9 +260,16 @@ def main():
 
     base_model = getattr(trainer.model, 'module', trainer.model)
     base_model.load_state_dict(checkpoint['model_state_dict'])
+    # A model can only be scored on frames scaled the way it was trained on
+    input_scaling = checkpoint_input_scaling(checkpoint)
+    if input_scaling != base_model.input_scaling:
+        print(f"Note: this config scales frames {base_model.input_scaling!r}, but the "
+              f"checkpoint was trained on {input_scaling!r}, so it is scored with {input_scaling!r}.")
+        base_model.input_scaling = input_scaling
     print(f"Loaded {checkpoint_path}")
     print(f"  trained to epoch {checkpoint.get('epoch', '?')}, "
-          f"val loss {checkpoint.get('val_loss', float('nan')):.4f}")
+          f"val loss {checkpoint.get('val_loss', float('nan')):.4f}, "
+          f"input scaling {input_scaling}")
     if checkpoint.get('selection_score') is not None and checkpoint.get('selection_metric') != 'val_loss':
         print(f"  val {checkpoint['selection_metric']} {checkpoint['selection_score']:.4f}")
 
@@ -374,6 +382,7 @@ def main():
         'split': args.split,
         'checkpoint': checkpoint_path,
         'epoch': checkpoint.get('epoch'),
+        'input_scaling': input_scaling,
         'decoder': settings,
         'metrics': metrics,
         'token_detection': detection,

@@ -3,6 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import VivitModel
 
+from src.utils.input_scaling import check_input_scaling, scale_frames
+
+# Google's Scenic training config for this checkpoint zero-centres frames.
+# scripts/check_input_scaling.py checks this against the alternatives.
+DEFAULT_INPUT_SCALING = 'minus_one_one'
+
 
 def interpolate_position_grid(grid_pos, old_shape, new_shape):
     """Resize a flattened (time, height, width) position-embedding grid.
@@ -120,6 +126,12 @@ class ViViT_CTC_HF(nn.Module):
 
         model_name = getattr(config, 'vivit_model_name', 'google/vivit-b-16x2-kinetics400')
         self.vivit = VivitModel.from_pretrained(model_name)
+
+        # Frames arrive as 0..1 and are rescaled to ViViT's pretraining range
+        # after the compressor. A plain attribute, so evaluation can set it to
+        # whatever a checkpoint was trained with.
+        self.input_scaling = check_input_scaling(
+            getattr(config, 'input_scaling', None) or DEFAULT_INPUT_SCALING)
 
         frame_h, frame_w = config.frame_size
         if frame_h != frame_w:
@@ -291,10 +303,15 @@ class ViViT_CTC_HF(nn.Module):
         """Number of CTC time steps emitted, identical for every sample."""
         return self.num_temporal
 
+    def scale_input(self, x):
+        """Rescale compressed 0..1 frames, (B, C, T, H, W), for ViViT."""
+        return scale_frames(x, self.input_scaling, channel_dim=1)
+
     def pool_features(self, x, video_lengths=None):
         """Per-step features before normalisation and the CTC head: (B, T, D)."""
-        # x: (B, C, T_in, H, W)
+        # x: (B, C, T_in, H, W), pixels in 0..1
         x = self.compressor(x, video_lengths)
+        x = self.scale_input(x)
 
         # ViViT expects (B, T, C, H, W)
         x = x.permute(0, 2, 1, 3, 4)

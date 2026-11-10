@@ -71,7 +71,7 @@ def layer_profile(model, batches, device, use_amp, proj_dim=64):
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
         for videos, lengths in batches:
             compressed = model.compressor(videos.to(device), lengths.to(device))
-            outputs = model.vivit(compressed.permute(0, 2, 1, 3, 4),
+            outputs = model.vivit(model.scale_input(compressed).permute(0, 2, 1, 3, 4),
                                   output_hidden_states=True)
             states = outputs.hidden_states
             if pooled_layers is None:
@@ -179,6 +179,7 @@ def main():
     from src.training.vivit_trainer import ViViTTrainer
     from src.utils.text_utils import label_fingerprint_mismatch
     from src.utils.environment import checkpoint_environment_mismatch
+    from src.utils.input_scaling import checkpoint_input_scaling
 
     config.auto_resume = False
     # Measured on the clips as recorded, including with --split train
@@ -203,8 +204,9 @@ def main():
         batches.append((batch['videos'], batch['video_lengths']))
 
     before = measure(model, batches, device, use_amp)
-    report("Pretrained ViViT (CTC head untrained)", before)
-    report_layers("Pretrained ViViT", layer_profile(model, batches, device, use_amp))
+    label = f"Pretrained ViViT (CTC head untrained), input scaling {model.input_scaling}"
+    report(label, before)
+    report_layers(label, layer_profile(model, batches, device, use_amp))
 
     if not os.path.exists(checkpoint_path):
         print(f"\nNo checkpoint at {checkpoint_path}; showing the pretrained model only.")
@@ -227,7 +229,10 @@ def main():
             print(f"\nSkipping {checkpoint_path}: it does not match this model's "
                   f"architecture ({str(exc).splitlines()[0]})")
         else:
-            label = f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}"
+            # Measured on frames scaled the way the checkpoint was trained on
+            model.input_scaling = checkpoint_input_scaling(checkpoint)
+            label = (f"Trained checkpoint, epoch {checkpoint.get('epoch', '?')}, "
+                     f"input scaling {model.input_scaling}")
             after = measure(model, batches, device, use_amp)
             report(label, after)
             report_layers(label, layer_profile(model, batches, device, use_amp))

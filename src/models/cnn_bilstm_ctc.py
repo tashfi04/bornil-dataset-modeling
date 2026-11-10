@@ -3,10 +3,19 @@ import torch.nn as nn
 from torchvision.models import resnet18, resnet34
 import torch.nn.functional as F
 
+from src.utils.input_scaling import check_input_scaling, scale_frames
+
+# torchvision's IMAGENET1K_V1 ResNets were trained on ImageNet-normalized pixels
+DEFAULT_INPUT_SCALING = 'imagenet'
+
 class CNNBiLSTMCTC(nn.Module):
     def __init__(self, num_classes, cnn_backbone="resnet18", lstm_hidden_size=256,
-                 lstm_layers=2, dropout=0.3, freeze_cnn=True):
+                 lstm_layers=2, dropout=0.3, freeze_cnn=True, input_scaling=None):
         super(CNNBiLSTMCTC, self).__init__()
+
+        # Frames arrive as 0..1. A plain attribute, so evaluation can set it to
+        # whatever a checkpoint was trained with.
+        self.input_scaling = check_input_scaling(input_scaling or DEFAULT_INPUT_SCALING)
 
         # CNN backbone
         if cnn_backbone == "resnet18":
@@ -63,6 +72,9 @@ class CNNBiLSTMCTC(nn.Module):
 
         # Use the device of the input tensor to ensure consistency between multiple GPUs
         device = x.device
+
+        # Pixels in 0..1 -> the scaling the pretrained ResNet expects
+        x = scale_frames(x, self.input_scaling, channel_dim=1)
 
         # Fold time into the batch dimension so the CNN sees every frame at once
         # Reshape to (B*T, C, H, W) - combine batch and time dimensions
