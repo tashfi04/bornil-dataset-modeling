@@ -110,7 +110,8 @@ def main():
     parser.add_argument("--bpe_vocab_size", type=int, default=None,
                         help="Size of the BPE vocabulary (defaults to the config's)")
     args = parser.parse_args()
-    check_environment()
+    # The learned merges depend on these
+    check_environment(packages=('tokenizers', 'pandas', 'numpy'))
 
     if args.config == "test":
         from configs.test_vivit_ctc_config import config

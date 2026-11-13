@@ -53,7 +53,8 @@ def main():
     parser.add_argument('--limit', type=int, default=None,
                         help="Only check the first N rows (debugging)")
     args = parser.parse_args()
-    check_environment()
+    # Which samples pass depends on the tokenizer and the CSV reader
+    check_environment(packages=('tokenizers', 'pandas'))
 
     if args.model == 'vivit' and args.config == 'test':
         from configs.test_vivit_ctc_config import config

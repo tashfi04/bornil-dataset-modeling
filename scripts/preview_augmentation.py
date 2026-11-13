@@ -20,7 +20,6 @@ import cv2
 import numpy as np
 import torch
 
-from src.utils.environment import check_environment
 
 
 def frame_strip(video, columns):
@@ -44,7 +43,6 @@ def main():
     parser.add_argument('--columns', type=int, default=8, help="Frames shown per row")
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
-    check_environment()
 
     if args.model == 'vivit':
         if args.config == 'test':

@@ -7,7 +7,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from configs.base_config import config
 from src.data_loader import get_data_loaders
-from src.utils.environment import check_environment
 
 def analyze_actual_frame_counts():
     """Analyze actual frame counts from successfully loaded videos"""
@@ -75,5 +74,4 @@ def analyze_actual_frame_counts():
     print(f"   This would affect only {100-95}% of videos")
 
 if __name__ == "__main__":
-    check_environment()
     analyze_actual_frame_counts()

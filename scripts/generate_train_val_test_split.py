@@ -90,7 +90,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", choices=["prod", "test"], default="prod",
                         help="test reads the dataset from the Kaggle test config's paths")
     args = parser.parse_args()
-    check_environment()
+    # The split depends on these packages' random draws
+    check_environment(packages=('numpy', 'scikit-learn', 'pandas'))
 
     if args.config == "test":
         from configs.test_vivit_ctc_config import config

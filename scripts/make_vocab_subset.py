@@ -271,7 +271,8 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
-    check_environment()
+    # Standard library and this repository only, so only Python's version matters
+    check_environment(packages=())
 
     from configs.subset_vivit_ctc_config import config
     run(args.csv or config.csv_path, config.train_val_test_split_path, config.valid_samples_path,

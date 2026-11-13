@@ -50,7 +50,8 @@ def main():
     parser.add_argument('--output', default=None,
                         help="ARPA file to write (defaults to <output_dir>/lm/<units>_<order>gram.arpa)")
     args = parser.parse_args()
-    check_environment()
+    # The LM's units come from the tokenizer and the CSV reader
+    check_environment(packages=('tokenizers', 'pandas'))
 
     if args.model == 'vivit':
         if args.config == 'test':

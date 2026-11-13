@@ -13,7 +13,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", choices=["prod", "test"], default="prod",
                         help="test reads the dataset from the Kaggle test config's paths")
     args = parser.parse_args()
-    check_environment()
+    # The vocabulary is read from the CSV with pandas
+    check_environment(packages=('pandas',))
 
     if args.config == "test":
         from configs.test_vivit_ctc_config import config

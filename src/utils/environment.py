@@ -11,6 +11,12 @@ versions. To add a package without changing any installed one, install it with
 `pip install <package> -c environment_lock.txt` and regenerate the lock. To move
 to a new environment, regenerate the lock, update requirements.txt and
 PYTHON_VERSION to match, and re-run the smoke and overfit checks.
+
+Training, evaluation and anything else that runs the model check every
+package. A data-preparation script checks only Python and the packages that can
+change what it writes (check_environment(packages=...)), so it also runs on
+Kaggle's CPU image, which lacks the CUDA packages. A script whose output is
+only printed or looked at does not check at all.
 """
 import os
 import re
@@ -27,6 +33,9 @@ PYTHON_VERSION = "3.13"
 
 # Enough to see what changed without burying the error under hundreds of lines
 _MAX_LISTED = 20
+
+# Each provides cv2, and which one Python imports depends on sys.path order
+OPENCV = ('opencv-python', 'opencv-python-headless', 'opencv-contrib-python')
 
 
 def _canonical(name):
@@ -90,6 +99,27 @@ def _differences(reference, installed, reference_name, allow_added=False):
     return lines
 
 
+def _scoped_differences(locked, installed, packages):
+    """Differences for just `packages`.
+
+    Each entry is a package name, or a tuple of alternatives such as OPENCV: at
+    least one of them must be installed, and every installed one must match.
+    """
+    lines = []
+    for entry in packages:
+        group = (entry,) if isinstance(entry, str) else tuple(entry)
+        present = [_canonical(name) for name in group if _canonical(name) in installed]
+        if not present:
+            lines.append(f"{' or '.join(group)} is not installed")
+        for name in present:
+            want, have = locked.get(name), installed[name]
+            if want is None:
+                lines.append(f"{name} {have} is installed but not in the lock")
+            elif have != want:
+                lines.append(f"{name} {have} (the lock has {want})")
+    return lines
+
+
 def _listed(lines):
     shown = lines[:_MAX_LISTED]
     if len(lines) > _MAX_LISTED:
@@ -97,8 +127,14 @@ def _listed(lines):
     return "\n  " + "\n  ".join(shown)
 
 
-def check_environment():
-    """Raise unless Python and every installed package match the lock.
+def check_environment(packages=None):
+    """Raise unless Python and the installed packages match the lock.
+
+    By default every installed package must match. A data-preparation script
+    passes `packages`, the names (or OPENCV-style tuples of alternatives) whose
+    versions can change what it writes, and then only those and Python are
+    checked. () checks Python alone, for a script that uses only the standard
+    library and this repository.
 
     Returns what a checkpoint records about the environment.
     """
@@ -125,17 +161,22 @@ def check_environment():
     python = platform.python_version()
     if not (python == PYTHON_VERSION or python.startswith(PYTHON_VERSION + '.')):
         problems.append(f"python {python} (expected {PYTHON_VERSION})")
-    packages = installed_packages()
-    problems += _differences(locked, packages, "the lock")
+    installed = installed_packages()
+    if packages is None:
+        problems += _differences(locked, installed, "the lock")
+    else:
+        problems += _scoped_differences(locked, installed, packages)
 
     if problems:
+        scope = ("The installed packages do not match" if packages is None
+                 else "The packages this script depends on do not match")
         raise RuntimeError(
-            "The installed packages do not match environment_lock.txt:"
+            f"{scope} environment_lock.txt:"
             + _listed(problems)
             + "\nUse the Kaggle notebook pinned to the environment the lock was "
               "taken from. If the change is intended, regenerate the lock and "
               "re-run the smoke and overfit checks.")
-    return {'python': python, 'packages': packages}
+    return {'python': python, 'packages': installed}
 
 
 def describe_environment(environment):
