@@ -3,13 +3,34 @@ import pandas as pd
 from collections import Counter
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, normalizers
 
-def normalize_text(text: str) -> str:
+# Bumped whenever normalize_text changes what a sentence turns into. It is part
+# of the label fingerprint, so checkpoints, language models and valid-sample
+# lists made under another version are refused instead of silently mixed.
+# 2: punctuation and symbols removed.
+TEXT_NORMALIZATION = 2
+
+# The Metaspace word marker is a Unicode symbol, but it is not punctuation
+WORD_MARKER = '\u2581'
+
+
+def is_punctuation(char):
+    """Whether `char` is a punctuation mark or symbol (danda, comma, %, ...)."""
+    return char != WORD_MARKER and unicodedata.category(char)[0] in 'PS'
+
+
+def normalize_text(text: str, keep_punctuation: bool = False) -> str:
     """
     Apply the same normalization used during vocabulary building
     - Lowercase (for Latin script)
     - Remove control characters and invisible formatting
     - Map special Unicode characters to standard forms
+    - Replace punctuation and symbols with spaces
     - Collapse multiple spaces
+
+    Punctuation is not signed, and attached to a word it turns one sign into
+    several output classes ("না", "না।", "না,", "না?"), so targets and
+    references carry none. `keep_punctuation` is for a model whose decoder
+    writes punctuation itself.
     """
 
     # Unicode normalization form KC
@@ -52,6 +73,9 @@ def normalize_text(text: str) -> str:
     # )
 
     # text = ''.join(allowed_pattern.findall(text))
+
+    if not keep_punctuation:
+        text = ''.join(' ' if is_punctuation(char) else char for char in text)
 
     # Collapse runs of whitespace into a single space
     text = re.sub(r'\s+', ' ', text).strip()
@@ -204,6 +228,16 @@ def load_bpe_tokenizer(tokenizer_path):
             f"{tokenizer_path} has no decoder, so decoding joins sub-word tokens "
             f"with spaces and inflates WER. Retrain it with "
             f"scripts/train_bpe_tokenizer.py.")
+    # Normalized text has no punctuation, so tokens that carry any were learned
+    # from differently normalized text and can never occur in a target
+    stale = [token for token in tokenizer.get_vocab()
+             if any(is_punctuation(char) for char in token)]
+    if stale:
+        raise RuntimeError(
+            f"{tokenizer_path} has {len(stale)} tokens with punctuation (e.g. "
+            f"{stale[:3]!r}), so it was trained before punctuation was removed from "
+            f"the text. Retrain it with scripts/train_bpe_tokenizer.py, then re-run "
+            f"scripts/validate_dataset.py.")
     return tokenizer
 
 def label_fingerprint(config):
@@ -222,7 +256,9 @@ def label_fingerprint(config):
         content = {key: saved.get(key) for key in ('model', 'pre_tokenizer', 'normalizer')}
     else:
         with open(config.vocab_path, 'r', encoding='utf-8') as f:
-            content = json.load(f)['char_to_id']
+            content = {'char_to_id': json.load(f)['char_to_id']}
+    # The same ids mean different targets if the text is normalized differently
+    content['text_normalization'] = TEXT_NORMALIZATION
     blob = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
     return hashlib.sha256(blob).hexdigest()[:16]
 

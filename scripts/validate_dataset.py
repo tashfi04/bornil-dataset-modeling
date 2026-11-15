@@ -26,7 +26,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.text_utils import (
-    normalize_text, text_to_int, text_to_bpe_ids, load_bpe_tokenizer,
+    normalize_text, text_to_int, text_to_bpe_ids, load_bpe_tokenizer, TEXT_NORMALIZATION,
 )
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit, required_ctc_steps
 from src.utils.video_stats import load_video_stats, summarize
@@ -193,6 +193,7 @@ def main():
     payload = {
         'model': args.model,
         'tokenization': tokenization,
+        'text_normalization': TEXT_NORMALIZATION,
         'ctc_steps': ctc_steps,
         'token_limit': token_limit,
         'num_frames': config.num_frames,

@@ -33,10 +33,16 @@ class SubsetViViTCTCConfig:
     # Training, as in the prod config
     learning_rate = 5e-5
     batch_size = 4
-    gradient_accumulation_steps = 4  # 1 = no accumulation
+    # No accumulation: a small training set needs the updates. At batch 4 this
+    # is 572 updates per epoch on 2,286 clips, against 143 with accumulation 4.
+    gradient_accumulation_steps = 1  # 1 = no accumulation
     num_epochs = 100
     warmup_epochs = 10
-    early_stopping_patience = 10
+    # Early in training, greedy output is one generic guess for every clip, so
+    # CER stalls while the model is still learning signs. Token detection
+    # shows that stage, at the cost of being noisier, hence the longer patience.
+    selection_metric = 'detection'
+    early_stopping_patience = 15
     augment = True
 
     # Paths. The subset CSV has the same columns as the full one and points at
@@ -57,7 +63,10 @@ class SubsetViViTCTCConfig:
     frame_size = (224, 224)
     num_frames = 160        # frames read from each video
     compressed_frames = 64  # frames handed to ViViT after compression
-    sampling_strategy = "strategic"
+    # How they are reduced: "pick" takes evenly spaced real frames, "average"
+    # blends neighbouring frames with a trainable conv
+    temporal_reduction = "pick"
+    sampling_strategy = "uniform"
     sampling_segments = 6
 
     gradient_checkpointing = True

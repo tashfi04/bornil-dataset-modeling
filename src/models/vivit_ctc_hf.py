@@ -37,24 +37,40 @@ def interpolate_position_grid(grid_pos, old_shape, new_shape):
     return grid.permute(0, 2, 3, 4, 1).reshape(1, new_t * new_h * new_w, dim)
 
 
+TEMPORAL_REDUCTIONS = ('pick', 'average')
+DEFAULT_TEMPORAL_REDUCTION = 'pick'
+# What checkpoints from before the setting existed were trained with
+LEGACY_TEMPORAL_REDUCTION = 'average'
+
+
 class TemporalCompressor(nn.Module):
-    """Resamples a frame sequence to `target_frames`, in pixel space.
+    """Reduces a frame sequence to `target_frames`, in pixel space.
 
-    Compression happens before ViViT and keeps the 3-channel image format, so
-    ViViT's pretrained tubelet embedding still receives images. The depthwise
-    conv starts as an identity tap and the resampling is area-averaging, so at
-    initialization the output is exactly the temporal average pool of the input:
-    natural motion-blurred frames rather than noise. The conv then learns how to
-    weight neighbouring frames.
+    Reduction happens before ViViT and keeps the 3-channel image format, so
+    ViViT's pretrained tubelet embedding still receives images.
 
-    Clips shorter than target_frames are stretched rather than padded, and each
-    clip in a batch is resampled over its own real length, so the zero padding
-    added by collate_fn never enters the average.
+    - 'pick': evenly spaced real frames, one from the middle of each stretch of
+      the clip. ViViT was pretrained on single sharp frames, and on our clips
+      the pretrained model recognises signing better from these than from
+      averages (scripts/check_frame_blending.py). No trainable weights.
+    - 'average': a depthwise conv that starts as an identity tap, then area
+      averaging, so at initialization each output frame is the average of the
+      input frames it covers. Fast hand movements become double exposures.
+
+    Clips shorter than target_frames are stretched rather than padded ('pick'
+    repeats frames, 'average' interpolates), and each clip in a batch is
+    reduced over its own real length, so the zero padding added by collate_fn
+    never reaches ViViT.
     """
 
-    def __init__(self, target_frames, kernel_size=5, channels=3):
+    def __init__(self, target_frames, kernel_size=5, channels=3, mode='average'):
         super().__init__()
+        if mode not in TEMPORAL_REDUCTIONS:
+            raise ValueError(f"temporal_reduction must be one of {TEMPORAL_REDUCTIONS}, got {mode!r}")
         self.target_frames = target_frames
+        self.mode = mode
+        if mode == 'pick':
+            return
         self.temporal_conv = nn.Conv3d(
             channels, channels,
             kernel_size=(kernel_size, 1, 1),
@@ -65,6 +81,15 @@ class TemporalCompressor(nn.Module):
         with torch.no_grad():
             self.temporal_conv.weight.zero_()
             self.temporal_conv.weight[:, :, kernel_size // 2] = 1.0
+
+    def _pick(self, x):
+        """The real frame at the middle of each of target_frames equal stretches."""
+        length = x.size(2)
+        if length == self.target_frames:
+            return x
+        positions = torch.arange(self.target_frames, device=x.device)
+        index = ((positions + 0.5) * length / self.target_frames).long().clamp_(max=length - 1)
+        return x.index_select(2, index)
 
     def _resample(self, x):
         """Resample the time axis of one clip to exactly target_frames."""
@@ -86,20 +111,24 @@ class TemporalCompressor(nn.Module):
 
     def forward(self, x, video_lengths=None):
         # x: (B, C, T_in, H, W)
-        x = self.temporal_conv(x)
+        if self.mode == 'pick':
+            reduce = self._pick
+        else:
+            x = self.temporal_conv(x)
+            reduce = self._resample
 
-        # Batches are padded to their longest clip. Resampling across the padding
-        # would average blank frames into every output frame, so each clip is
-        # resampled over its own real length instead.
+        # Batches are padded to their longest clip. Reducing across the padding
+        # would bring blank frames into the output, so each clip is reduced
+        # over its own real length instead.
         if video_lengths is None:
-            return self._resample(x)
+            return reduce(x)
 
         lengths = [max(1, int(n)) for n in video_lengths.tolist()]
         if all(n == x.size(2) for n in lengths):
-            return self._resample(x)
+            return reduce(x)
 
         return torch.cat(
-            [self._resample(x[i:i + 1, :, :n]) for i, n in enumerate(lengths)],
+            [reduce(x[i:i + 1, :, :n]) for i, n in enumerate(lengths)],
             dim=0,
         )
 
@@ -108,7 +137,7 @@ class ViViT_CTC_HF(nn.Module):
     """Pretrained HuggingFace ViViT with a CTC head, for long sign-language clips.
 
     Pipeline: (B, C, T_in, H, W) raw frames
-      -> TemporalCompressor          T_in -> compressed_frames
+      -> TemporalCompressor          T_in -> compressed_frames (real frames picked)
       -> pretrained ViViT            position embeddings interpolated to our grid,
                                      optionally truncated to vivit_feature_layer
       -> mean-pool over spatial patches
@@ -142,7 +171,10 @@ class ViViT_CTC_HF(nn.Module):
         self.compressed_frames = getattr(
             config, 'compressed_frames', getattr(config, 'num_frames', 32)
         )
-        self.compressor = TemporalCompressor(self.compressed_frames)
+        self.temporal_reduction = (getattr(config, 'temporal_reduction', None)
+                                   or DEFAULT_TEMPORAL_REDUCTION)
+        self.compressor = TemporalCompressor(self.compressed_frames,
+                                             mode=self.temporal_reduction)
 
         t_patch, h_patch, w_patch = self.vivit.config.tubelet_size
         if self.compressed_frames % t_patch:
@@ -175,8 +207,9 @@ class ViViT_CTC_HF(nn.Module):
         self._truncate_vivit(getattr(config, 'vivit_feature_layer', None))
 
         if getattr(config, 'gradient_checkpointing', False):
-            # The compressor is trainable and sits before ViViT, so ViViT's
-            # activations are kept for backward even when its weights are frozen.
+            # An averaging compressor is trainable and sits before ViViT, so
+            # ViViT's activations are kept for backward even when its weights
+            # are frozen.
             try:
                 self.vivit.gradient_checkpointing_enable(
                     gradient_checkpointing_kwargs={'use_reentrant': False}
@@ -184,7 +217,7 @@ class ViViT_CTC_HF(nn.Module):
             except TypeError:
                 self.vivit.gradient_checkpointing_enable()
 
-        # The compressor and CTC head always stay trainable
+        # The compressor (when it has weights) and CTC head always stay trainable
         if getattr(config, 'freeze_backbone', True):
             for param in self.vivit.parameters():
                 param.requires_grad = False

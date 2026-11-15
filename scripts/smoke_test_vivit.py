@@ -168,11 +168,24 @@ def main():
     with torch.no_grad():
         probe = torch.rand(1, 3, num_frames, 8, 8)
         out = model.compressor.to('cpu')(probe)
-        expected_avg = torch.nn.functional.adaptive_avg_pool3d(probe, (compressed, 8, 8))
-        max_dev = (out - expected_avg).abs().max().item()
+        if model.temporal_reduction == 'pick':
+            # Every output frame must be one of the input frames, later ones
+            # from later in the clip
+            sources = [(probe[0] - out[0, :, j:j + 1]).abs().amax(dim=(0, 2, 3)).argmin().item()
+                       for j in range(out.size(2))]
+            max_dev = max((probe[0, :, src] - out[0, :, j]).abs().max().item()
+                          for j, src in enumerate(sources))
+            in_order = all(b >= a for a, b in zip(sources, sources[1:]))
+        else:
+            expected_avg = torch.nn.functional.adaptive_avg_pool3d(probe, (compressed, 8, 8))
+            max_dev = (out - expected_avg).abs().max().item()
     model.compressor.to(device)
-    check("initialized to exact temporal average pooling", max_dev < 1e-4,
-          f"max deviation {max_dev:.2e}")
+    if model.temporal_reduction == 'pick':
+        check("picks real frames, in order", max_dev < 1e-6 and in_order,
+              f"max deviation {max_dev:.2e}, in order {in_order}")
+    else:
+        check("initialized to exact temporal average pooling", max_dev < 1e-4,
+              f"max deviation {max_dev:.2e}")
     print(f"  compressor output shape: {tuple(out.shape)}")
 
     # ------------------------------------------- 3b. variable-length handling
@@ -250,10 +263,17 @@ def main():
           "zero/inf loss means input_length < target_length somewhere")
 
     loss.backward()
-    comp_grad = model.compressor.temporal_conv.weight.grad
-    check("gradient reaches the compressor through frozen ViViT",
-          comp_grad is not None and torch.isfinite(comp_grad).all()
-          and comp_grad.abs().sum().item() > 0)
+    if model.temporal_reduction == 'pick':
+        # Picking frames has no weights; the head is what must receive gradient
+        head_grad = model.classifier.weight.grad
+        check("gradient reaches the CTC head",
+              head_grad is not None and torch.isfinite(head_grad).all()
+              and head_grad.abs().sum().item() > 0)
+    else:
+        comp_grad = model.compressor.temporal_conv.weight.grad
+        check("gradient reaches the compressor through frozen ViViT",
+              comp_grad is not None and torch.isfinite(comp_grad).all()
+              and comp_grad.abs().sum().item() > 0)
 
     if device.type == 'cuda':
         peak = torch.cuda.max_memory_allocated() / 1024 ** 3

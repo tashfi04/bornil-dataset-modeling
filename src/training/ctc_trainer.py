@@ -15,7 +15,9 @@ from src.utils.token_detection import token_detection
 from src.training.base_trainer import BaseTrainer
 
 # Scores that can choose best_model.pth and drive early stopping; lower is better
-SELECTION_METRICS = ('cer', 'wer', 'val_loss')
+# 'detection' is how far val token detection falls short of what sentence length
+# alone achieves (length AUC minus model AUC), so beating length is negative.
+SELECTION_METRICS = ('cer', 'wer', 'val_loss', 'detection')
 
 class CTCTrainer(BaseTrainer):
     def __init__(self, config, log_filename='training.log'):
@@ -41,6 +43,9 @@ class CTCTrainer(BaseTrainer):
         self.setup_optimizer()
         self.logger.info(f"Input scaling: {model_input_scaling(self.model)} "
                          f"(applied to 0..1 frames just before the backbone)")
+        reduction = getattr(getattr(self.model, 'module', self.model), 'temporal_reduction', None)
+        if reduction is not None:
+            self.logger.info(f"Frame reduction before the backbone: {reduction}")
         # Set by every validate(); see _token_detection()
         self.val_detection = None
 
@@ -106,12 +111,16 @@ class CTCTrainer(BaseTrainer):
         still improves, so a decoded score is the better guide. It has to be
         measured on val every epoch, which validate() does in the same pass as
         the loss.
+
+        While a model is still learning its first signs, greedy output is one
+        generic guess for every clip and WER/CER barely move. 'detection'
+        follows token detection instead, which shows that stage.
         """
         metric = getattr(self.config, 'selection_metric', 'val_loss')
         if metric not in SELECTION_METRICS:
             raise ValueError(f"selection_metric must be one of {SELECTION_METRICS}, got {metric!r}")
         interval = max(1, getattr(self.config, 'metrics_interval', 5))
-        if metric != 'val_loss' and (self._metrics_split() != 'val' or interval != 1):
+        if metric in ('cer', 'wer') and (self._metrics_split() != 'val' or interval != 1):
             raise ValueError(
                 f"selection_metric={metric!r} needs metrics on the val split every "
                 f"epoch (metrics_split='val', metrics_interval=1), but this config has "
@@ -341,6 +350,7 @@ class CTCTrainer(BaseTrainer):
             'label_fingerprint': self.label_fingerprint,
             'environment': self.environment,
             'input_scaling': model_input_scaling(self.model),
+            'temporal_reduction': getattr(base_model, 'temporal_reduction', None),
             'training_state': training_state or {},
         }
         if self.scheduler is not None:
@@ -368,6 +378,7 @@ class CTCTrainer(BaseTrainer):
                 'label_fingerprint': checkpoint['label_fingerprint'],
                 'environment': checkpoint['environment'],
                 'input_scaling': checkpoint['input_scaling'],
+                'temporal_reduction': checkpoint['temporal_reduction'],
                 'training_state': checkpoint['training_state'],
                 'weights_only': True,
             }, best_path)
@@ -485,6 +496,18 @@ class CTCTrainer(BaseTrainer):
                 f"the config to continue that run, or move the old checkpoints aside "
                 f"to start a separate one.")
 
+        # ViViT only. Checkpoints from before the setting existed averaged frames.
+        current_reduction = getattr(getattr(self.model, 'module', self.model),
+                                    'temporal_reduction', None)
+        saved_reduction = checkpoint.get('temporal_reduction') or 'average'
+        if current_reduction is not None and saved_reduction != current_reduction:
+            raise RuntimeError(
+                f"{path} was trained with temporal_reduction={saved_reduction!r}, but "
+                f"this run uses {current_reduction!r}, so the frames ViViT sees would "
+                f"change partway through. Set temporal_reduction={saved_reduction!r} in "
+                f"the config to continue that run, or move the old checkpoints aside "
+                f"to start a separate one.")
+
         state = dict(checkpoint.get('training_state') or {})
 
         # Checkpoints from before selection_metric existed chose by val loss
@@ -564,12 +587,12 @@ class CTCTrainer(BaseTrainer):
             # a best score from inside the warmup
             if start_epoch - 1 <= warmup_epochs and best_score != float('inf'):
                 self.logger.info(
-                    f"Ignoring the checkpoint's best {metric} {best_score:.4f}: it was "
+                    f"Ignoring the checkpoint's best {metric} {self._shown(metric, best_score)}: it was "
                     f"set during the warmup, which no longer picks the best checkpoint")
                 best_score = float('inf')
             self.logger.info(
                 f"Resumed at epoch {start_epoch}/{self.config.num_epochs} "
-                f"(best {metric} {best_score:.4f}, patience {patience_counter}, "
+                f"(best {metric} {self._shown(metric, best_score)}, patience {patience_counter}, "
                 f"backbone_unfrozen={backbone_unfrozen})"
             )
             if start_epoch > self.config.num_epochs:
@@ -590,7 +613,7 @@ class CTCTrainer(BaseTrainer):
             decode = self._metrics_due(epoch) and self._metrics_split() == 'val'
             val_loss, decoded = self.validate(epoch, decode=decode)
             metrics = self.calculate_wer_cer(epoch, decoded)
-            score = val_loss if metric == 'val_loss' else metrics[metric]
+            score = self._selection_score(metric, val_loss, metrics)
 
             # Per-step schedulers already advanced inside train_epoch
             if not self.step_scheduler_per_batch and self.scheduler is not None:
@@ -642,14 +665,16 @@ class CTCTrainer(BaseTrainer):
                 'backbone_unfrozen': backbone_unfrozen,
             }, score=score)
             summary = f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
-            if metric != 'val_loss':
+            if metric == 'detection':
+                summary += f", Val detection margin over length: {self._shown(metric, score)}"
+            elif metric != 'val_loss':
                 summary += f", Val {metric.upper()}: {score:.4f}"
             if is_best:
                 summary += " (new best)"
             elif in_warmup:
                 summary += " (warmup, not a best-checkpoint candidate)"
             else:
-                summary += f" (best {best_score:.4f}, patience {patience_counter})"
+                summary += f" (best {self._shown(metric, best_score)}, patience {patience_counter})"
             self.logger.info(summary)
 
             # Early stopping
@@ -660,6 +685,27 @@ class CTCTrainer(BaseTrainer):
                 break
 
         self._report_checkpoints()
+
+    def _selection_score(self, metric, val_loss, metrics):
+        """This epoch's value of the selection metric; lower is better."""
+        if metric == 'val_loss':
+            return val_loss
+        if metric == 'detection':
+            detection = self.val_detection
+            if detection is None:
+                raise RuntimeError(
+                    f"selection_metric='detection' needs val tokens to score, but no "
+                    f"token is in at least {self._detection_min_clips()} val clips and "
+                    f"missing from as many. Lower detection_min_clips, or select by "
+                    f"another metric.")
+            return detection['mean_length_auc'] - detection['mean_auc']
+        return metrics[metric]
+
+    @staticmethod
+    def _shown(metric, score):
+        """A selection score as logged. Detection is shown as the model's margin
+        over the length baseline, so positive means it beats length."""
+        return f"{-score:+.4f}" if metric == 'detection' else f"{score:.4f}"
 
     def _autocast(self):
         """Mixed-precision context for the forward pass; a no-op when disabled."""

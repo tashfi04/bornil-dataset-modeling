@@ -29,15 +29,16 @@ from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_loader import sample_frames
-from src.utils.frame_cache import cache_path, encode_frames
+from src.utils.frame_cache import cache_path, encode_frames, read_cache_info, write_cache_info
+from src.utils.frame_fit import fit_frame, check_frame_fit, DEFAULT_FRAME_FIT
 from src.utils.environment import check_environment, OPENCV
 
 # Each worker is already a separate process, so keep OpenCV single-threaded
 cv2.setNumThreads(0)
 
 
-def read_and_sample(video_path, num_frames, size, strategy, segments):
-    """Decode a video, sample to num_frames, resize to size. Returns RGB frames."""
+def read_and_sample(video_path, num_frames, size, strategy, segments, fit):
+    """Decode a video, fit each frame to size, sample to num_frames. Returns RGB frames."""
     cap = cv2.VideoCapture(video_path)
     frames = []
     try:
@@ -45,7 +46,7 @@ def read_and_sample(video_path, num_frames, size, strategy, segments):
             ret, frame = cap.read()
             if not ret:
                 break
-            frame = cv2.resize(frame, (size[1], size[0]))
+            frame = fit_frame(frame, size, fit)
             frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     finally:
         cap.release()
@@ -59,11 +60,11 @@ def read_and_sample(video_path, num_frames, size, strategy, segments):
 def process_one(task):
     """Worker: decode one video and (optionally) write its cache file."""
     (video_path, out_path, num_frames, size, strategy, segments,
-     quality, dry_run) = task
+     quality, dry_run, fit) = task
 
     started = time.time()
     try:
-        frames, raw_count = read_and_sample(video_path, num_frames, size, strategy, segments)
+        frames, raw_count = read_and_sample(video_path, num_frames, size, strategy, segments, fit)
         blob = encode_frames(frames, quality=quality)
         if not dry_run:
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -130,6 +131,20 @@ def main():
     size = (args.size, args.size)
     strategy = getattr(config, 'sampling_strategy', 'uniform')
     segments = getattr(config, 'sampling_segments', 3)
+    fit = check_frame_fit(getattr(config, 'frame_fit', DEFAULT_FRAME_FIT))
+
+    # One cache holds frames built one way. Mixing would train on both unnoticed.
+    info = {'frames': args.frames, 'size': args.size, 'sampling': strategy, 'fit': fit}
+    if not args.dry_run and os.path.isdir(args.out):
+        existing = read_cache_info(args.out)
+        has_clips = any(files for _, _, files in os.walk(args.out))
+        if existing is None and has_clips:
+            sys.exit(f"{args.out} holds clips but no cache_info.json, so it was built "
+                     f"before frame fitting was recorded (frames stretched to a square). "
+                     f"Delete it, or pass another --out.")
+        if existing is not None and existing != info:
+            sys.exit(f"{args.out} was built with {existing}, but this run would add "
+                     f"clips built with {info}. Delete it, or pass another --out.")
 
     df = pd.read_csv(config.csv_path)
     print(f"Dataset rows: {len(df)}")
@@ -143,9 +158,10 @@ def main():
         print(f"DRY RUN on {n} randomly sampled videos - nothing will be written")
 
     print(f"Frames/video: {args.frames}   size: {size}   JPEG quality: {args.quality}")
-    print(f"Sampling: {strategy} ({segments} segments)   workers: {args.workers}")
+    print(f"Sampling: {strategy}   frame fit: {fit}   workers: {args.workers}")
     if not args.dry_run:
         print(f"Writing to: {args.out}")
+        write_cache_info(args.out, info)
 
     tasks = []
     skipped = 0
@@ -156,7 +172,7 @@ def main():
             skipped += 1
             continue
         tasks.append((video_path, out_path, args.frames, size, strategy,
-                      segments, args.quality, args.dry_run))
+                      segments, args.quality, args.dry_run, fit))
 
     if skipped:
         print(f"Skipping {skipped} already-cached clips (use --overwrite to redo)")

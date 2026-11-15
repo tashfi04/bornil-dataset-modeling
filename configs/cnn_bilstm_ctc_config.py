@@ -21,7 +21,7 @@ class CNNBiLSTMCTCConfig:
     # Video processing
     frame_size = (112, 112)
     num_frames = 160  # Explicitly set for CNN-BiLSTM
-    sampling_strategy = "strategic"
+    sampling_strategy = "uniform"
     sampling_segments = 6
 
     tokenization_type = "character"  # or "bpe"

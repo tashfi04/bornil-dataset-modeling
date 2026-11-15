@@ -33,7 +33,7 @@ class TestCNNBiLSTMConfig:
     # Video processing for testing
     frame_size = (112, 112)
     num_frames = 64
-    sampling_strategy = "strategic"
+    sampling_strategy = "uniform"
     sampling_segments = 6
 
     tokenization_type = "character"  # or "bpe"

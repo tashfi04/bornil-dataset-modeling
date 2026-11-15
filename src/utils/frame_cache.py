@@ -12,8 +12,14 @@ One file per recording. Layout (little-endian, no padding):
     width    u16
     lengths  u32 * count byte length of each JPEG blob
     blobs                concatenated JPEG bytes
+
+The cache root also holds cache_info.json, written by
+scripts/preprocess_cache_frames.py: how the frames were sampled and fitted.
+The loader checks it against the config, because frames built another way
+would otherwise be trained on unnoticed.
 """
 import os
+import json
 import struct
 
 import cv2
@@ -23,6 +29,7 @@ MAGIC = b'BFC1'
 _HEADER = '<4sHHH'
 _HEADER_SIZE = struct.calcsize(_HEADER)
 CACHE_SUFFIX = '.bfc'
+CACHE_INFO = 'cache_info.json'
 
 
 def encode_frames(frames, quality=90):
@@ -80,6 +87,21 @@ def write_cached_frames(path, frames, quality=90):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         f.write(encode_frames(frames, quality=quality))
+
+
+def read_cache_info(cache_root):
+    """How the cache was built, or None for one from before this was recorded."""
+    path = os.path.join(cache_root, CACHE_INFO)
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def write_cache_info(cache_root, info):
+    os.makedirs(cache_root, exist_ok=True)
+    with open(os.path.join(cache_root, CACHE_INFO), 'w', encoding='utf-8') as f:
+        json.dump(info, f, indent=2)
 
 
 def cache_path(cache_root, chunk_path, recording):

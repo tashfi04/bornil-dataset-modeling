@@ -9,8 +9,10 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 
-from src.utils.text_utils import text_to_int, load_bpe_tokenizer, text_to_bpe_ids, normalize_text
-from src.utils.frame_cache import cache_path, read_cached_frames
+from src.utils.text_utils import (text_to_int, load_bpe_tokenizer, text_to_bpe_ids,
+                                  normalize_text, TEXT_NORMALIZATION)
+from src.utils.frame_cache import cache_path, read_cached_frames, read_cache_info
+from src.utils.frame_fit import fit_frame, check_frame_fit, DEFAULT_FRAME_FIT, LEGACY_FRAME_FIT
 from src.utils.ctc_limits import ctc_time_steps, target_token_limit
 from src.utils.augmentation import augment_clip, check_augmentation
 
@@ -101,9 +103,11 @@ class BdSLDataset(Dataset):
 
         # When set, frames come from the cache built by
         # scripts/preprocess_cache_frames.py instead of being decoded per epoch
+        self.frame_fit = check_frame_fit(getattr(config, 'frame_fit', DEFAULT_FRAME_FIT))
         self.cache_root = getattr(config, 'cached_frames_path', None) or None
         if self.cache_root is not None:
             logger.info(f"Reading frames from cache: {self.cache_root}")
+            self._check_cache_settings()
 
         self.valid_indices = self._build_valid_indices()
         self._apply_subset()
@@ -136,6 +140,26 @@ class BdSLDataset(Dataset):
             f"{self.mode}: restricted to a fixed subset of {size} samples "
             f"(remove {self.mode}_subset_size from the config for the full split)"
         )
+
+    def _check_cache_settings(self):
+        """Refuse a cache whose frames were fitted or sampled another way."""
+        info = read_cache_info(self.cache_root)
+        # A cache without the record predates it: stretched frames
+        built = {'fit': LEGACY_FRAME_FIT} if info is None else info
+        wanted = {'fit': self.frame_fit,
+                  'sampling': getattr(self.config, 'sampling_strategy', 'uniform')}
+        differing = {key: (built[key], value) for key, value in wanted.items()
+                     if key in built and built[key] != value}
+        if not differing:
+            return
+        details = ', '.join(f"{key}={recorded!r} (config has {current!r})"
+                            for key, (recorded, current) in differing.items())
+        message = (f"The frame cache at {self.cache_root} was built with {details}. "
+                   f"Rebuild it with scripts/preprocess_cache_frames.py, or change the "
+                   f"config to match.")
+        if self.strict:
+            raise RuntimeError(message)
+        logger.warning(message)
 
     def _check_cache_complete(self):
         """Fail at startup if the cache is missing clips, not midway through an epoch."""
@@ -178,11 +202,14 @@ class BdSLDataset(Dataset):
             'tokenization': getattr(self.config, 'tokenization_type', 'character'),
             'ctc_steps': ctc_time_steps(self.config),
             'token_limit': target_token_limit(self.config),
+            'text_normalization': TEXT_NORMALIZATION,
         }
+        # Lists written before the text normalization was versioned used version 1
+        recorded = {'text_normalization': 1, **payload}
         mismatched = {
-            key: (payload[key], current)
+            key: (recorded[key], current)
             for key, current in critical.items()
-            if key in payload and payload[key] != current
+            if key in recorded and recorded[key] != current
         }
         if mismatched:
             details = ', '.join(
@@ -307,7 +334,7 @@ class BdSLDataset(Dataset):
                     ret, frame = cap.read()
                     if not ret:
                         break
-                    frame = cv2.resize(frame, (self.config.frame_size[1], self.config.frame_size[0]))
+                    frame = fit_frame(frame, self.config.frame_size, self.frame_fit)
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     frames.append(frame)
             finally:

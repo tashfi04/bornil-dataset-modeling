@@ -259,6 +259,14 @@ def main():
               f"{lm_record['sentences']} sentences)")
 
     base_model = getattr(trainer.model, 'module', trainer.model)
+    # ViViT only. Checkpoints from before the setting existed averaged frames.
+    reduction = getattr(base_model, 'temporal_reduction', None)
+    saved_reduction = checkpoint.get('temporal_reduction') or 'average'
+    if reduction is not None and saved_reduction != reduction:
+        print(f"\n{checkpoint_path} was trained with temporal_reduction="
+              f"{saved_reduction!r}, but this config uses {reduction!r}. Set "
+              f"temporal_reduction={saved_reduction!r} in the config to score it.")
+        sys.exit(1)
     base_model.load_state_dict(checkpoint['model_state_dict'])
     # A model can only be scored on frames scaled the way it was trained on
     input_scaling = checkpoint_input_scaling(checkpoint)
@@ -271,7 +279,10 @@ def main():
           f"val loss {checkpoint.get('val_loss', float('nan')):.4f}, "
           f"input scaling {input_scaling}")
     if checkpoint.get('selection_score') is not None and checkpoint.get('selection_metric') != 'val_loss':
-        print(f"  val {checkpoint['selection_metric']} {checkpoint['selection_score']:.4f}")
+        if checkpoint['selection_metric'] == 'detection':
+            print(f"  val detection margin over length {-checkpoint['selection_score']:+.4f}")
+        else:
+            print(f"  val {checkpoint['selection_metric']} {checkpoint['selection_score']:.4f}")
 
     loader = {'test': trainer.test_loader,
               'val': trainer.val_loader,

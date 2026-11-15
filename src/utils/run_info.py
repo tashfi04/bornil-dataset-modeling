@@ -17,12 +17,13 @@ def print_run_summary(config, title):
 
     print(f"Frames read per video: {config.num_frames}")
     print(f"Frame size: {config.frame_size}")
-    print(f"Sampling: {config.sampling_strategy} ({config.sampling_segments} segments)")
+    print(f"Frame fit: {getattr(config, 'frame_fit', 'pad')}")
+    print(f"Sampling: {config.sampling_strategy}")
 
     # ViViT compresses the frames it reads, which fixes the CTC time axis
     compressed = getattr(config, 'compressed_frames', None)
     if compressed is not None:
-        print(f"Compressed to: {compressed} frames")
+        print(f"Reduced to: {compressed} frames ({getattr(config, 'temporal_reduction', 'pick')})")
 
     tokenization = getattr(config, 'tokenization_type', 'character')
     print(f"Tokenization: {tokenization}")

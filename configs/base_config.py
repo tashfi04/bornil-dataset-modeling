@@ -69,9 +69,13 @@ class BaseConfig:
 
     # Video processing (default values, overridden by model-specific configs)
     num_frames = 160        # Target number of frames read from every video
-    sampling_strategy = "strategic"  # "uniform" or "strategic"; default "uniform"
-    sampling_segments = 6  # For strategic sampling: number of segments
+    sampling_strategy = "uniform"  # "uniform", or "strategic" (uneven; kept for old caches)
+    sampling_segments = 6  # only read by "strategic" sampling
     frame_size = (112, 112) # (height, width)
+    # How a decoded frame is fitted to frame_size: "pad" keeps its shape and
+    # fills the rest with grey, "stretch" distorts it (src/utils/frame_fit.py).
+    # A frame cache records the fit it was built with.
+    frame_fit = "pad"
 
     # Training (default values, overridden by model-specific configs)
     batch_size = 4

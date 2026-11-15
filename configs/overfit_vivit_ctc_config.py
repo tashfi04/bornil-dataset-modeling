@@ -66,7 +66,10 @@ class OverfitViViTCTCConfig:
     frame_size = (160, 160)
     num_frames = 80
     compressed_frames = 64
-    sampling_strategy = "strategic"
+    # How they are reduced: "pick" takes evenly spaced real frames, "average"
+    # blends neighbouring frames with a trainable conv
+    temporal_reduction = "pick"
+    sampling_strategy = "uniform"
     sampling_segments = 6
 
     gradient_checkpointing = True

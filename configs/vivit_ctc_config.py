@@ -34,7 +34,10 @@ class ViViTCTCConfig:
     frame_size = (224, 224)
     num_frames = 160        # frames read from each video
     compressed_frames = 64  # frames handed to ViViT after compression
-    sampling_strategy = "strategic"
+    # How they are reduced: "pick" takes evenly spaced real frames, "average"
+    # blends neighbouring frames with a trainable conv
+    temporal_reduction = "pick"
+    sampling_strategy = "uniform"
     sampling_segments = 6
 
     # Recompute activations instead of storing them; the trainable compressor
