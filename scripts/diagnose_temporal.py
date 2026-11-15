@@ -9,6 +9,7 @@ this for the pretrained weights and for a trained checkpoint, on the same clips.
     python scripts/diagnose_temporal.py --checkpoint path/to/last_checkpoint.pth
     python scripts/diagnose_temporal.py --config test --split val
     python scripts/diagnose_temporal.py --config subset --csv path/to/subset.csv --split val
+    python scripts/diagnose_temporal.py --config subset --csv path/to/subset.csv --layers 12
 """
 import os
 import sys
@@ -166,6 +167,12 @@ def main():
                              "in the config's checkpoint directory)")
     parser.add_argument('--batches', type=int, default=8,
                         help="Batches of clips to measure")
+    parser.add_argument('--layers', type=int, default=None,
+                        help="Build the pretrained model with this many ViViT layers "
+                             "instead of the config's vivit_feature_layer, to profile "
+                             "layers the config cuts off. No checkpoint is loaded.")
+    parser.add_argument('--input-scaling', default=None,
+                        help="Pixel scaling for the pretrained model (defaults to the config's)")
     args = parser.parse_args()
 
     if args.config == 'overfit':
@@ -186,6 +193,10 @@ def main():
     config.augment = False
     if args.csv:
         config.csv_path = args.csv
+    if args.layers is not None:
+        config.vivit_feature_layer = args.layers
+    if args.input_scaling is not None:
+        config.input_scaling = args.input_scaling
     trainer = ViViTTrainer(config, log_filename='diagnose.log')
     model = getattr(trainer.model, 'module', trainer.model)
     model.eval()
@@ -208,7 +219,9 @@ def main():
     report(label, before)
     report_layers(label, layer_profile(model, batches, device, use_amp))
 
-    if not os.path.exists(checkpoint_path):
+    if args.layers is not None:
+        print(f"\n--layers {args.layers}: showing the pretrained model only.")
+    elif not os.path.exists(checkpoint_path):
         print(f"\nNo checkpoint at {checkpoint_path}; showing the pretrained model only.")
     else:
         checkpoint = torch.load(checkpoint_path, map_location=device)
