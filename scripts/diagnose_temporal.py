@@ -45,7 +45,14 @@ def forward_stages(model, videos, lengths):
     """Run the model's own feature path, returning each stage for measurement."""
     compressed = model.compressor(videos, lengths)                  # (B, 3, Tc, H, W)
     batch = compressed.size(0)
-    pooled = model.pool_features(videos, lengths)                   # (B, Tt, D)
+    patches = model.patch_features(compressed)                      # (B, Tt, S, D)
+    pooled = patches.mean(dim=2)                                    # as the model pools
+    # The same features averaged over only the patches that show something,
+    # leaving out flat ones such as the bars of a padded frame
+    mask = model.content_mask(compressed)                           # (B, S)
+    # In full precision: summing many half-precision activations can overflow
+    weights = mask.float()[:, None, :, None]
+    content = (patches.float() * weights).sum(dim=2) / weights.sum(dim=2).clamp_min(1.0)
     head_input = model.feature_norm(pooled)
     log_probs = F.log_softmax(model.classifier(head_input).float(), dim=-1)
 
@@ -53,7 +60,7 @@ def forward_stages(model, videos, lengths):
     # which does not need full resolution
     small = F.adaptive_avg_pool3d(compressed.float(), (compressed.size(2), 20, 20))
     pixels = small.permute(0, 2, 1, 3, 4).reshape(batch, compressed.size(2), -1)
-    return pixels, pooled, head_input, log_probs
+    return pixels, pooled, head_input, log_probs, content, mask.float().mean(dim=1)
 
 
 def layer_profile(model, batches, device, use_amp, proj_dim=64):
@@ -108,15 +115,18 @@ def report_layers(label, profile):
 
 
 def measure(model, batches, device, use_amp):
-    pixels, pooled, head_input, log_probs = [], [], [], []
+    pixels, pooled, head_input, log_probs, content, shown = [], [], [], [], [], []
     with torch.no_grad(), torch.amp.autocast('cuda', enabled=use_amp):
         for videos, lengths in batches:
-            p, q, h, r = forward_stages(model, videos.to(device), lengths.to(device))
+            p, q, h, r, c, m = forward_stages(model, videos.to(device), lengths.to(device))
             pixels.append(p.float().cpu())
             pooled.append(q.float().cpu())
             head_input.append(h.float().cpu())
             log_probs.append(r.float().cpu())
+            content.append(c.float().cpu())
+            shown.append(m.float().cpu())
     pixels, pooled = torch.cat(pixels), torch.cat(pooled)
+    content, shown = torch.cat(content), torch.cat(shown)
     head_input, log_probs = torch.cat(head_input), torch.cat(log_probs)
 
     argmax = log_probs.argmax(dim=-1)
@@ -127,6 +137,8 @@ def measure(model, batches, device, use_amp):
         'pixel_adj': adjacent_cosine(pixels),
         'pooled_time': temporal_fraction(pooled),
         'pooled_adj': adjacent_cosine(pooled),
+        'content_time': temporal_fraction(content),
+        'content_share': shown.mean().item(),
         'head_time': temporal_fraction(head_input),
         'logit_time': temporal_fraction(log_probs),
         'blank_argmax': (argmax == 0).float().mean().item(),
@@ -143,6 +155,8 @@ def report(label, m):
     print("  share of variance from change over time (0 = constant in time)")
     print(f"    compressor output (input to ViViT): {m['pixel_time']:.3f}")
     print(f"    pooled ViViT features:              {m['pooled_time']:.3f}")
+    print(f"    pooled over non-empty patches only: {m['content_time']:.3f}  "
+          f"({100 * m['content_share']:.0f}% of patches are non-empty)")
     print(f"    CTC head input (after its norm):    {m['head_time']:.3f}")
     print(f"    CTC log-probs:                      {m['logit_time']:.3f}")
     print("  cosine between consecutive steps (1 = no change)")
@@ -173,6 +187,11 @@ def main():
                              "layers the config cuts off. No checkpoint is loaded.")
     parser.add_argument('--input-scaling', default=None,
                         help="Pixel scaling for the pretrained model (defaults to the config's)")
+    parser.add_argument('--frame-fit', choices=['pad', 'stretch'], default=None,
+                        help="How frames are fitted to the square (defaults to the config's). "
+                             "A frame cache built the other way is refused.")
+    parser.add_argument('--temporal-reduction', choices=['pick', 'average'], default=None,
+                        help="How frames are reduced before ViViT (defaults to the config's)")
     args = parser.parse_args()
 
     if args.config == 'overfit':
@@ -197,6 +216,14 @@ def main():
         config.vivit_feature_layer = args.layers
     if args.input_scaling is not None:
         config.input_scaling = args.input_scaling
+    if args.frame_fit is not None:
+        config.frame_fit = args.frame_fit
+    if args.temporal_reduction is not None:
+        config.temporal_reduction = args.temporal_reduction
+    # A checkpoint belongs to the config's own settings, so any of these
+    # overrides means only the pretrained model is measured
+    pretrained_only = any(value is not None for value in (
+        args.layers, args.input_scaling, args.frame_fit, args.temporal_reduction))
     trainer = ViViTTrainer(config, log_filename='diagnose.log')
     model = getattr(trainer.model, 'module', trainer.model)
     model.eval()
@@ -215,12 +242,13 @@ def main():
         batches.append((batch['videos'], batch['video_lengths']))
 
     before = measure(model, batches, device, use_amp)
-    label = f"Pretrained ViViT (CTC head untrained), input scaling {model.input_scaling}"
+    label = (f"Pretrained ViViT (CTC head untrained), input scaling {model.input_scaling}, "
+             f"frames {trainer.train_loader.dataset.frame_fit}, {model.temporal_reduction}")
     report(label, before)
     report_layers(label, layer_profile(model, batches, device, use_amp))
 
-    if args.layers is not None:
-        print(f"\n--layers {args.layers}: showing the pretrained model only.")
+    if pretrained_only:
+        print("\nSettings were overridden on the command line: showing the pretrained model only.")
     elif not os.path.exists(checkpoint_path):
         print(f"\nNo checkpoint at {checkpoint_path}; showing the pretrained model only.")
     else:

@@ -105,9 +105,14 @@ def main():
     total = sum(p.numel() for p in model.parameters())
     print(f"  parameters: {total:,} total, {trainable:,} trainable")
 
-    # Must hold even when the backbone is frozen
-    comp_trainable = all(p.requires_grad for p in model.compressor.parameters())
-    check("temporal compressor is trainable", comp_trainable)
+    comp_params = list(model.compressor.parameters())
+    if model.temporal_reduction == 'pick':
+        check("frame picking has no weights", not comp_params,
+              f"{sum(p.numel() for p in comp_params)} parameters")
+    else:
+        # Must hold even when the backbone is frozen
+        check("temporal compressor is trainable",
+              bool(comp_params) and all(p.requires_grad for p in comp_params))
 
     # ---------------------------------------------- 2b. interpolation correctness
     print("\n=== 2b. Position-embedding interpolation ===")

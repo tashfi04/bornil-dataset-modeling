@@ -340,14 +340,10 @@ class ViViT_CTC_HF(nn.Module):
         """Rescale compressed 0..1 frames, (B, C, T, H, W), for ViViT."""
         return scale_frames(x, self.input_scaling, channel_dim=1)
 
-    def pool_features(self, x, video_lengths=None):
-        """Per-step features before normalisation and the CTC head: (B, T, D)."""
-        # x: (B, C, T_in, H, W), pixels in 0..1
-        x = self.compressor(x, video_lengths)
-        x = self.scale_input(x)
-
+    def patch_features(self, compressed):
+        """ViViT features of reduced 0..1 frames, (B, C, T, H, W), as (B, Tt, S, D)."""
         # ViViT expects (B, T, C, H, W)
-        x = x.permute(0, 2, 1, 3, 4)
+        x = self.scale_input(compressed).permute(0, 2, 1, 3, 4)
 
         outputs = self.vivit(x)
         sequence_output = outputs.last_hidden_state  # (B, 1 + Tt*S, D)
@@ -363,10 +359,32 @@ class ViViT_CTC_HF(nn.Module):
                 f"ViViT returned {num_patches} patches, expected {expected} "
                 f"({self.num_temporal} temporal x {self.num_spatial} spatial)"
             )
-        patches = patches.view(batch_size, self.num_temporal, self.num_spatial, dim)
+        return patches.view(batch_size, self.num_temporal, self.num_spatial, dim)
+
+    def content_mask(self, compressed, tolerance=0.03):
+        """Which spatial patches show anything, as (B, S) booleans.
+
+        A patch counts as empty when it is one flat colour that does not change
+        between the first, middle and last frame: the grey bars added when a
+        frame is padded to a square, or a blown-out wall. `compressed` is the
+        reduced clip, (B, C, T, H, W) in 0..1; the order matches ViViT's patch
+        grid, height before width.
+        """
+        batch, channels, frames, height, width = compressed.shape
+        _, patch_h, patch_w = self.vivit.config.tubelet_size
+        sampled = compressed[:, :, [0, frames // 2, frames - 1]]
+        grid = sampled.reshape(batch, channels, 3, height // patch_h, patch_h,
+                               width // patch_w, patch_w)
+        spread = grid.amax(dim=(2, 4, 6)) - grid.amin(dim=(2, 4, 6))   # (B, C, Hp, Wp)
+        return (spread.amax(dim=1) >= tolerance).flatten(1)
+
+    def pool_features(self, x, video_lengths=None):
+        """Per-step features before normalisation and the CTC head: (B, T, D)."""
+        # x: (B, C, T_in, H, W), pixels in 0..1
+        compressed = self.compressor(x, video_lengths)
 
         # Pool away space so CTC runs over time alone
-        return patches.mean(dim=2)  # (B, Tt, D)
+        return self.patch_features(compressed).mean(dim=2)  # (B, Tt, D)
 
     def forward(self, x, video_lengths=None):
         pooled = self.pool_features(x, video_lengths)
