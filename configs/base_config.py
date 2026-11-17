@@ -72,10 +72,12 @@ class BaseConfig:
     sampling_strategy = "uniform"  # "uniform", or "strategic" (uneven; kept for old caches)
     sampling_segments = 6  # only read by "strategic" sampling
     frame_size = (112, 112) # (height, width)
-    # How a decoded frame is fitted to frame_size: "pad" keeps its shape and
-    # fills the rest with grey, "stretch" distorts it (src/utils/frame_fit.py).
-    # A frame cache records the fit it was built with.
-    frame_fit = "pad"
+    # How a decoded frame is fitted to frame_size (src/utils/frame_fit.py):
+    # "stretch_smooth" resizes straight to the square with area averaging,
+    # "stretch" does it with OpenCV's default filter, "pad" keeps the frame's
+    # shape and fills the rest with grey (which the pretrained ViViT handles
+    # badly). A frame cache records the fit it was built with.
+    frame_fit = "stretch_smooth"
 
     # Training (default values, overridden by model-specific configs)
     batch_size = 4

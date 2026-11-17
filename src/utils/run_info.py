@@ -17,7 +17,7 @@ def print_run_summary(config, title):
 
     print(f"Frames read per video: {config.num_frames}")
     print(f"Frame size: {config.frame_size}")
-    print(f"Frame fit: {getattr(config, 'frame_fit', 'pad')}")
+    print(f"Frame fit: {getattr(config, 'frame_fit', 'stretch_smooth')}")
     print(f"Sampling: {config.sampling_strategy}")
 
     # ViViT compresses the frames it reads, which fixes the CTC time axis

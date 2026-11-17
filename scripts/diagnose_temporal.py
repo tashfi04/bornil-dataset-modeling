@@ -187,7 +187,7 @@ def main():
                              "layers the config cuts off. No checkpoint is loaded.")
     parser.add_argument('--input-scaling', default=None,
                         help="Pixel scaling for the pretrained model (defaults to the config's)")
-    parser.add_argument('--frame-fit', choices=['pad', 'stretch'], default=None,
+    parser.add_argument('--frame-fit', choices=['stretch_smooth', 'stretch', 'pad'], default=None,
                         help="How frames are fitted to the square (defaults to the config's). "
                              "A frame cache built the other way is refused.")
     parser.add_argument('--temporal-reduction', choices=['pick', 'average'], default=None,
